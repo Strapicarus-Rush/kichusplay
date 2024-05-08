@@ -6,7 +6,8 @@
                 "${workspaceFolder}/**",
                 "${workspaceFolder}",
                 "/usr/include/freetype2/",
-                "/usr/share/fonts"
+                "/usr/share/fonts",
+                "/usr/include/SDL2"
             ],
             "defines": [],
             "compilerPath": "/usr/bin/gcc",
