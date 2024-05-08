@@ -20,15 +20,13 @@ libfreetype6-dev
 libfreetype-dev
 
 
+compile:Example (linux) 
 
-*freeglut3-dev **
+g++ -o gamestart.out gamestart.cpp -I/usr/include/SDL2 -lSDL2 -lGL -lGLEW -lsfml-audio && ./gamestart.out
 
-*not used in code.
-**Not recomended, do not use.
+Run:
+./gamestart.out
 
-compile:(linux) 
-
-g++ -o gamestart.out gamestart.cpp freetype.cpp -lglfw -lGL -lsfml-audio -pthread -I/usr/include/freetype2 -lfreetype 
 
 Run:
 ./gamestart.out
