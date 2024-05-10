@@ -2,11 +2,15 @@
 #include <iostream>
 #include <SDL.h>
 #include <SDL_opengl.h>
+#include <SDL_ttf.h>
+#include <string>
 #include <vector>
 #include <cmath>
 #include <SFML/Audio.hpp>
-// #include <SDL_opengl_glext.h>
-// #include <GL/glcorearb.h>
+#include <filesystem>
+#include <regex>
+
+namespace fs = std::filesystem;
 
 sf::SoundBuffer b_music;
 sf::Sound bp_music;
@@ -21,6 +25,122 @@ GLuint depthMap;
 
 void renderSceneFromLight();
 void renderSceneWithShadows();
+
+bool isMouseCaptured = false;
+
+class Playlist
+{
+public:
+    void addSongsFromDirectory(const std::string &directoryPath)
+    {
+        if (fs::is_directory(directoryPath))
+        {
+            for (const auto &entry : fs::directory_iterator(directoryPath))
+            {
+                const auto &extension = entry.path().extension();
+                if (extension == ".flac" || extension == ".ogg" || extension == ".wav")
+                {
+                    addSong(entry.path().string());
+                    std::cerr << formatFlacMetadata(entry.path().string()) << std::endl;
+                }
+            }
+        }
+        else
+        {
+            std::cerr << "Directory is empty or does not exist: " << directoryPath << std::endl;
+        }
+    }
+    void addSong(const std::string &filename)
+    {
+        sf::SoundBuffer buffer;
+        if (buffer.loadFromFile(filename))
+        {
+            m_buffers.push_back(buffer);
+        }
+        else
+        {
+            std::cerr << "Failed to load: " << filename << std::endl;
+        }
+    }
+    std::string formatFlacMetadata(const std::string &filename)
+    {
+        // Define the regular expression pattern to find the split point
+        std::regex pattern("_-_\\d+_\\-_");
+
+        // Find the position to split the filename
+        std::smatch match;
+        std::string author, title;
+        if (std::regex_search(filename, match, pattern))
+        {
+            // Split the filename based on the regex match
+            author = filename.substr(19, match.position() - 19);
+            title = filename.substr(match.position() + match.length());
+        }
+
+        // Replace underscores with spaces
+        std::replace(author.begin(), author.end(), '_', ' ');
+        std::replace(title.begin(), title.end(), '_', ' ');
+
+        // Remove file extensions from the title
+        std::regex fileExtension("\\.(mp3|flac|wav)(\\.flac)?$");
+        title = std::regex_replace(title, fileExtension, "");
+
+        // // Remove leading and trailing whitespaces from author and title
+        author.erase(0, author.find_first_not_of(" \t\r\n"));
+        author.erase(author.find_last_not_of(" \t\r\n") + 1);
+        title.erase(0, title.find_first_not_of(" \t\r\n"));
+        title.erase(title.find_last_not_of(" \t\r\n") + 1);
+
+        return "Autor: " + author + "\nTitle: " + title;
+    }
+    void play()
+    {
+        if (m_currentIndex >= 0 && m_currentIndex < m_buffers.size())
+        {
+            m_sound.setBuffer(m_buffers[m_currentIndex]);
+            m_sound.play();
+        }
+        else
+        {
+            std::cout << "Playlist is empty or current index is out of bounds. Cannot play any song." << std::endl;
+        }
+    }
+
+    void pause()
+    {
+        m_sound.pause();
+    }
+
+    void stop()
+    {
+        m_sound.stop();
+    }
+
+    void next()
+    {
+        if (++m_currentIndex >= m_buffers.size())
+        {
+            m_currentIndex = 0;
+        }
+        stop();
+        play();
+    }
+
+    void previous()
+    {
+        if (--m_currentIndex < 0)
+        {
+            m_currentIndex = m_buffers.size() - 1;
+        }
+        stop();
+        play();
+    }
+
+private:
+    std::vector<sf::SoundBuffer> m_buffers;
+    sf::Sound m_sound;
+    int m_currentIndex = 0;
+};
 
 class PhysObject
 {
@@ -169,9 +289,9 @@ float PLAYER_SIZE = 2.0f;
 
 // Camera parameters
 float cameraPosX = 0.0f;
-float cameraPosY = 2.0f;
-float cameraPosZ = 4.0f;
-float cameraYaw = -90.0f; // Yaw angle (horizontal)
+float cameraPosY = 0.0f;
+float cameraPosZ = 0.0f;
+float cameraYaw = 0.0f;   // Yaw angle (horizontal)
 float cameraPitch = 0.0f; // Pitch angle (vertical)
 
 std::vector<Enemy> enemies;
@@ -199,7 +319,7 @@ void calculateViewMatrix()
 {
     // Apply rotation
     glRotatef(cameraPitch, 1.0f, 0.0f, 0.0f);
-    glRotatef(cameraYaw, 0.0f, 1.0f, 0.0f);
+    glRotatef(-cameraYaw, 0.0f, 1.0f, 0.0f);
     // Apply translation
     glTranslatef(-cameraPosX, -cameraPosY, -cameraPosZ);
 }
@@ -244,6 +364,13 @@ void handleInput(SDL_Window *window, Player &player)
             {
                 keySpacePressed = true;
             }
+            // Check if the ESC key is pressed
+            if (event.key.keysym.scancode == SDL_SCANCODE_ESCAPE)
+            {
+                isMouseCaptured = !isMouseCaptured;
+                SDL_SetRelativeMouseMode(isMouseCaptured ? SDL_TRUE : SDL_FALSE);
+                SDL_ShowCursor(isMouseCaptured ? SDL_DISABLE : SDL_ENABLE);
+            }
         }
         if (event.type == SDL_KEYUP)
         {
@@ -276,17 +403,27 @@ void handleInput(SDL_Window *window, Player &player)
                 keySpacePressed = false;
             }
         }
-        if (event.type == SDL_MOUSEMOTION)
+        if (event.type == SDL_MOUSEBUTTONDOWN && !isMouseCaptured)
         {
-            // if (event.motion.state)
-            // {
-            cameraYaw += event.motion.xrel * 0.1f;
-            cameraPitch += event.motion.yrel * 0.1f;
-            if (cameraPitch > 89.0f)
-                cameraPitch = 89.0f;
-            if (cameraPitch < -89.0f)
-                cameraPitch = -89.0f;
-            // }
+            isMouseCaptured = !isMouseCaptured;
+            SDL_SetRelativeMouseMode(isMouseCaptured ? SDL_TRUE : SDL_FALSE);
+            SDL_ShowCursor(isMouseCaptured ? SDL_DISABLE : SDL_ENABLE);
+        }
+
+        if (isMouseCaptured)
+        {
+            if (event.type == SDL_MOUSEMOTION)
+            {
+                // if (event.motion.state)
+                // {
+                cameraYaw += event.motion.xrel * 0.1f;
+                cameraPitch += event.motion.yrel * 0.1f;
+                if (cameraPitch > 89.0f)
+                    cameraPitch = 89.0f;
+                if (cameraPitch < -89.0f)
+                    cameraPitch = -89.0f;
+                // }
+            }
         }
     }
 }
@@ -327,6 +464,84 @@ void updateProjectiles()
     }
 }
 
+void drawSolidSphere(float radius, int numStacks, int numSlices)
+{
+    for (int i = 0; i < numStacks; ++i)
+    {
+        float theta1 = (float)i * M_PI / numStacks;
+        float theta2 = (float)(i + 1) * M_PI / numStacks;
+        float y1 = radius * cos(theta1);
+        float y2 = radius * cos(theta2);
+        float r1 = radius * sin(theta1);
+        float r2 = radius * sin(theta2);
+
+        glBegin(GL_TRIANGLE_STRIP);
+        for (int j = 0; j <= numSlices; ++j)
+        {
+            float phi = (float)j * 2.0f * M_PI / numSlices;
+            float x = cos(phi);
+            float z = sin(phi);
+
+            glNormal3f(x * r2 / radius, y2 / radius, z * r2 / radius);
+            glVertex3f(x * r2, y2, z * r2);
+            glNormal3f(x * r1 / radius, y1 / radius, z * r1 / radius);
+            glVertex3f(x * r1, y1, z * r1);
+        }
+        glEnd();
+    }
+}
+
+void drawSolidCube(float size)
+{
+    float halfSize = size / 2.0f;
+
+    glBegin(GL_QUADS);
+
+    // Front face
+    glNormal3f(0.0f, 0.0f, 1.0f);
+    glVertex3f(-halfSize, -halfSize, halfSize);
+    glVertex3f(halfSize, -halfSize, halfSize);
+    glVertex3f(halfSize, halfSize, halfSize);
+    glVertex3f(-halfSize, halfSize, halfSize);
+
+    // Back face
+    glNormal3f(0.0f, 0.0f, -1.0f);
+    glVertex3f(-halfSize, -halfSize, -halfSize);
+    glVertex3f(-halfSize, halfSize, -halfSize);
+    glVertex3f(halfSize, halfSize, -halfSize);
+    glVertex3f(halfSize, -halfSize, -halfSize);
+
+    // Top face
+    glNormal3f(0.0f, 1.0f, 0.0f);
+    glVertex3f(-halfSize, halfSize, -halfSize);
+    glVertex3f(-halfSize, halfSize, halfSize);
+    glVertex3f(halfSize, halfSize, halfSize);
+    glVertex3f(halfSize, halfSize, -halfSize);
+
+    // Bottom face
+    glNormal3f(0.0f, -1.0f, 0.0f);
+    glVertex3f(-halfSize, -halfSize, -halfSize);
+    glVertex3f(halfSize, -halfSize, -halfSize);
+    glVertex3f(halfSize, -halfSize, halfSize);
+    glVertex3f(-halfSize, -halfSize, halfSize);
+
+    // Right face
+    glNormal3f(1.0f, 0.0f, 0.0f);
+    glVertex3f(halfSize, -halfSize, -halfSize);
+    glVertex3f(halfSize, halfSize, -halfSize);
+    glVertex3f(halfSize, halfSize, halfSize);
+    glVertex3f(halfSize, -halfSize, halfSize);
+
+    // Left face
+    glNormal3f(-1.0f, 0.0f, 0.0f);
+    glVertex3f(-halfSize, -halfSize, -halfSize);
+    glVertex3f(-halfSize, -halfSize, halfSize);
+    glVertex3f(-halfSize, halfSize, halfSize);
+    glVertex3f(-halfSize, halfSize, -halfSize);
+
+    glEnd();
+}
+
 void drawStickman(float posX, float posY, float posZ)
 {
     // Set drawing color
@@ -335,72 +550,78 @@ void drawStickman(float posX, float posY, float posZ)
     // Draw head
     glPushMatrix();
     glTranslatef(posX, posY + 1.8f, posZ);
-    glBegin(GL_POLYGON);
-    const int numSegments = 30;
-    for (int i = 0; i < numSegments; ++i)
-    {
-        float angle = 2.0f * M_PI * i / numSegments;
-        glVertex2f(posX + cos(angle), posY + sin(angle));
-    }
-    glEnd();
+    drawSolidSphere(0.2f, 20, 20); // Adjust sphere radius as needed
     glPopMatrix();
 
     // Draw body
     glPushMatrix();
     glTranslatef(posX, posY + 0.5f, posZ);
-    glBegin(GL_POLYGON);
-    glVertex2f(posX - 0.2f, posY);
-    glVertex2f(posX + 0.2f, posY);
-    glVertex2f(posX + 0.2f, posY + 3.0f);
-    glVertex2f(posX - 0.2f, posY + 3.0f);
-    glEnd();
+    drawSolidCube(0.4f); // Adjust cube dimensions as needed
     glPopMatrix();
 
     // Draw arms
     glPushMatrix();
     glTranslatef(posX - 0.3f, posY + 1.0f, posZ);
-    glScalef(0.8f, 0.2f, 1.0f); // Scale to adjust arm size
-    glBegin(GL_POLYGON);
-    glVertex2f(posX, posY);
-    glVertex2f(posX + 1.0f, posY);
-    glVertex2f(posX + 1.0f, posY + 1.0f);
-    glVertex2f(posX, posY + 1.0f);
-    glEnd();
+    glScalef(0.8f, 0.2f, 0.2f); // Scale to adjust arm size
+    drawSolidCube(1.0f);        // Adjust cube dimensions as needed
     glPopMatrix();
 
     glPushMatrix();
     glTranslatef(posX + 0.3f, posY + 1.0f, posZ);
-    glScalef(0.8f, 0.2f, 1.0f); // Scale to adjust arm size
-    glBegin(GL_POLYGON);
-    glVertex2f(posX, posY);
-    glVertex2f(posX + 1.0f, posY);
-    glVertex2f(posX + 1.0f, posY + 1.0f);
-    glVertex2f(posX, posY + 1.0f);
-    glEnd();
+    glScalef(0.8f, 0.2f, 0.2f); // Scale to adjust arm size
+    drawSolidCube(1.0f);        // Adjust cube dimensions as needed
     glPopMatrix();
 
     // Draw legs
     glPushMatrix();
     glTranslatef(posX - 0.1f, posY - 0.5f, posZ);
-    glScalef(0.4f, 0.8f, 1.0f); // Scale to adjust leg size
-    glBegin(GL_POLYGON);
-    glVertex2f(posX, posY);
-    glVertex2f(posX + 1.0f, posY);
-    glVertex2f(posX + 1.0f, posY + 2.0f);
-    glVertex2f(posX, posY + 2.0f);
-    glEnd();
+    glScalef(0.4f, 0.8f, 0.2f); // Scale to adjust leg size
+    drawSolidCube(1.0f);        // Adjust cube dimensions as needed
     glPopMatrix();
 
     glPushMatrix();
     glTranslatef(posX + 0.1f, posY - 0.5f, posZ);
-    glScalef(0.4f, 0.8f, 1.0f); // Scale to adjust leg size
-    glBegin(GL_POLYGON);
-    glVertex2f(posX, posY);
-    glVertex2f(posX + 1.0f, posY);
-    glVertex2f(posX + 1.0f, posY + 2.0f);
-    glVertex2f(posX, posY + 2.0f);
-    glEnd();
+    glScalef(0.4f, 0.8f, 0.2f); // Scale to adjust leg size
+    drawSolidCube(1.0f);        // Adjust cube dimensions as needed
     glPopMatrix();
+}
+
+void renderAxis()
+{
+    // Render axes (x: red, y: green, z: blue)
+    glBegin(GL_LINES);
+
+    // X-axis (red)
+    glColor3f(1.0f, 0.0f, 0.0f);
+    glVertex3f(-10.0f, 0.0f, 0.0f);
+    glVertex3f(10.0f, 0.0f, 0.0f);
+    // Arrowhead for X-axis
+    glVertex3f(10.0f, 0.0f, 0.0f);
+    glVertex3f(9.0f, 1.0f, 0.0f);
+    glVertex3f(10.0f, 0.0f, 0.0f);
+    glVertex3f(9.0f, -1.0f, 0.0f);
+
+    // Y-axis (green)
+    glColor3f(0.0f, 1.0f, 0.0f);
+    glVertex3f(0.0f, -10.0f, 0.0f);
+    glVertex3f(0.0f, 10.0f, 0.0f);
+    // Arrowhead for Y-axis
+    glVertex3f(0.0f, 10.0f, 0.0f);
+    glVertex3f(1.0f, 9.0f, 0.0f);
+    glVertex3f(0.0f, 10.0f, 0.0f);
+    glVertex3f(-1.0f, 9.0f, 0.0f);
+
+    // Z-axis (blue)
+    glColor3f(0.0f, 0.0f, 1.0f);
+    glVertex3f(0.0f, 0.0f, -10.0f);
+    glVertex3f(0.0f, 0.0f, 10.0f);
+    // Arrowhead for Z-axis
+    glVertex3f(0.0f, 0.0f, 10.0f);
+    glVertex3f(0.0f, 1.0f, 9.0f);
+    glVertex3f(0.0f, 0.0f, 10.0f);
+    glVertex3f(0.0f, -1.0f, 9.0f);
+
+    glEnd();
 }
 
 // Function to render the scene
@@ -414,18 +635,7 @@ void renderScene(SDL_Window *window, Player &player)
     glLoadIdentity();
     calculateViewMatrix();
 
-    // Render axes (x: red, y: green, z: blue)
-    glBegin(GL_LINES);
-    glColor3f(1.0f, 0.0f, 0.0f); // X-axis (red)
-    glVertex3f(-10.0f, 0.0f, 0.0f);
-    glVertex3f(10.0f, 0.0f, 0.0f);
-    glColor3f(0.0f, 1.0f, 0.0f); // Y-axis (green)
-    glVertex3f(0.0f, -10.0f, 0.0f);
-    glVertex3f(0.0f, 10.0f, 0.0f);
-    glColor3f(0.0f, 0.0f, 0.0f); // Z-axis (blue)
-    glVertex3f(0.0f, 0.0f, -10.0f);
-    glVertex3f(0.0f, 0.0f, 10.0f);
-    glEnd();
+    renderAxis();
 
     // Render ground plane
     glColor3f(0.5f, 0.5f, 0.5f);
@@ -434,7 +644,6 @@ void renderScene(SDL_Window *window, Player &player)
     glVertex3f(-10.0f, GROUND_Y, 10.0f);
     glVertex3f(10.0f, GROUND_Y, 10.0f);
     glVertex3f(10.0f, -GROUND_Y, -10.0f);
-    ;
     glEnd();
 
     // Render player
@@ -445,35 +654,35 @@ void renderScene(SDL_Window *window, Player &player)
 
     glPopMatrix();
 
-    // Render enemies
-    for (const auto &enemy : enemies)
-    {
-        glPushMatrix();
-        glTranslatef(enemy.posX, enemy.posY, enemy.posZ);
-        glColor3f(1.0f, 0.0f, 0.0f);
-        glBegin(GL_QUADS);
-        glVertex3f(-0.25f, -0.25f, -0.25f);
-        glVertex3f(0.25f, -0.25f, -0.25f);
-        glVertex3f(0.25f, 0.25f, -0.25f);
-        glVertex3f(-0.25f, 0.25f, -0.25f);
-        glEnd();
-        glPopMatrix();
-    }
+    // // Render enemies
+    // for (const auto &enemy : enemies)
+    // {
+    //     glPushMatrix();
+    //     glTranslatef(enemy.posX, enemy.posY, enemy.posZ);
+    //     glColor3f(1.0f, 0.0f, 0.0f);
+    //     glBegin(GL_QUADS);
+    //     glVertex3f(-0.25f, -0.25f, -0.25f);
+    //     glVertex3f(0.25f, -0.25f, -0.25f);
+    //     glVertex3f(0.25f, 0.25f, -0.25f);
+    //     glVertex3f(-0.25f, 0.25f, -0.25f);
+    //     glEnd();
+    //     glPopMatrix();
+    // }
 
-    // Render projectiles
-    for (const auto &projectile : projectiles)
-    {
-        glPushMatrix();
-        glTranslatef(projectile.posX, projectile.posY, projectile.posZ);
-        glColor3f(0.0f, 1.0f, 0.0f);
-        glBegin(GL_QUADS);
-        glVertex3f(-0.1f, -0.1f, -0.1f);
-        glVertex3f(0.1f, -0.1f, -0.1f);
-        glVertex3f(0.1f, 0.1f, -0.1f);
-        glVertex3f(-0.1f, 0.1f, -0.1f);
-        glEnd();
-        glPopMatrix();
-    }
+    // // Render projectiles
+    // for (const auto &projectile : projectiles)
+    // {
+    //     glPushMatrix();
+    //     glTranslatef(projectile.posX, projectile.posY, projectile.posZ);
+    //     glColor3f(0.0f, 1.0f, 0.0f);
+    //     glBegin(GL_QUADS);
+    //     glVertex3f(-0.1f, -0.1f, -0.1f);
+    //     glVertex3f(0.1f, -0.1f, -0.1f);
+    //     glVertex3f(0.1f, 0.1f, -0.1f);
+    //     glVertex3f(-0.1f, 0.1f, -0.1f);
+    //     glEnd();
+    //     glPopMatrix();
+    // }
 
     // Swap buffers
     SDL_GL_SwapWindow(window);
@@ -482,9 +691,9 @@ void renderScene(SDL_Window *window, Player &player)
 // Function to update camera position following the player with acceleration and deceleration
 void updateCameraPosition(Player &player)
 {
-    float cameraSpeed = 0.2f; // Ajusta la velocidad según sea necesario
-    float distance = 5.0f;    // Distancia desde la parte trasera del jugador
-    float height = 2.0f;      // Altura sobre el jugador
+    float cameraSpeed = 0.2f;
+    float distance = 1.0f;
+    float height = 1.0f;
 
     // Calculate the direction from the camera to the player
     float directionX = player.posX - cameraPosX;
@@ -498,7 +707,7 @@ void updateCameraPosition(Player &player)
     directionZ /= length;
 
     // Calculate the desired position of the camera behind the player
-    float targetX = player.posX - directionX;
+    float targetX = player.posX;
     float targetY = player.posY - directionY + height;
     float targetZ = player.posZ - directionZ * distance;
 
@@ -627,9 +836,69 @@ GLuint createShaderProgram(const char *vertexSource, const char *fragmentSource)
     return program;
 }
 
+void checkKeyStatus(Player &player)
+{
+    // Calculate movement direction based on camera's yaw angle
+    float directionX = cos(player.rotationY * (M_PI / 180.0f));
+    float directionZ = -sin(player.rotationY * (M_PI / 180.0f));
+
+    // Update game state
+    float movementSpeed = 0.1f; // Adjust movement speed as needed
+    if (keyWPressed)
+    {
+        // Move forward
+        // player.posZ -= movementSpeed;
+        player.posX += directionX * movementSpeed;
+        player.posZ += directionZ * movementSpeed;
+    }
+    if (keySPressed)
+    {
+        // Move backward
+        // player.posZ += movementSpeed;
+        player.posX -= directionX * movementSpeed;
+        player.posZ -= directionZ * movementSpeed;
+    }
+    if (keyAPressed)
+    {
+        // Move left
+        // player.posX -= movementSpeed;
+        player.posX -= directionZ * movementSpeed;
+        player.posZ += directionX * movementSpeed;
+    }
+    if (keyDPressed)
+    {
+        // Move right
+        // player.posX += movementSpeed;
+        player.posX += directionZ * movementSpeed;
+        player.posZ -= directionX * movementSpeed;
+    }
+    if (keyQPressed)
+    {
+        // Rotate left
+        player.rotationY -= 5.0f; // Adjust rotation angle (negative direction)
+    }
+    if (keyEPressed)
+    {
+        // Rotate right
+        player.rotationY += 5.0f; // Adjust rotation angle (positive direction)
+    }
+    if (keySpacePressed && !player.onAir)
+    {
+        // jump
+        // if(player.velocityY < 20.0f){
+        player.velocityY += 18.0f;
+        // }
+        player.posY += player.velocityY * DELTATIME;
+    }
+    else
+    {
+        player.velocityY -= GRAVITY;
+        player.posY += player.velocityY * DELTATIME;
+    }
+}
+
 int main(int argc, char *argv[])
 {
-
     // Initialize SDL
     if (SDL_Init(SDL_INIT_VIDEO) < 0)
     {
@@ -656,6 +925,17 @@ int main(int argc, char *argv[])
         return EXIT_FAILURE;
     }
 
+    // Initialize GLEW (if you're using it)
+    GLenum err = glewInit();
+    if (err != GLEW_OK)
+    {
+        std::cerr << "GLEW initialization failed: " << glewGetErrorString(err) << std::endl;
+        SDL_GL_DeleteContext(context);
+        SDL_DestroyWindow(window);
+        SDL_Quit();
+        return EXIT_FAILURE;
+    }
+
     // Set up OpenGL
     glClearColor(0.2f, 0.3f, 0.3f, 1.0f);
     glEnable(GL_DEPTH_TEST);
@@ -666,102 +946,35 @@ int main(int argc, char *argv[])
     std::vector<Projectile> projectiles;
 
     // Create a player instance
-    Player player(0.0f, 0.0f, 2.0f);
+    Player player(0.0f, 0.0f, 0.0f);
 
     // Load Background Music
-    if (!b_music.loadFromFile("Earl Grant - Fly Me To The Moon - side 1 - Decca DL 4454  D71EE DC Art Bass Vocal Boost-nr.flac"))
-    {
-        std::cerr << "Failed to load music" << std::endl;
-        return -1;
-    }
+    Playlist playlist;
+    playlist.addSongsFromDirectory("assets/media/music");
+    playlist.play();
 
-    bp_music.setBuffer(b_music);
-    bp_music.play();
-
+    // Check OpenGL version
+    std::cout << "OpenGL version: " << glGetString(GL_VERSION) << std::endl;
     // Main loop
     bool quit = false;
     while (!quit)
     {
         // Handle input
         handleInput(window, player);
-
-        // Calculate movement direction based on camera's yaw angle
-        float directionX = cos(player.rotationY * (M_PI / 180.0f));
-        float directionZ = -sin(player.rotationY * (M_PI / 180.0f));
-
-        // Update game state
-        float movementSpeed = 0.1f; // Adjust movement speed as needed
-        if (keyWPressed)
-        {
-            // Move forward
-            // player.posZ -= movementSpeed;
-            player.posX += directionX * movementSpeed;
-            player.posZ += directionZ * movementSpeed;
-        }
-        if (keySPressed)
-        {
-            // Move backward
-            // player.posZ += movementSpeed;
-            player.posX -= directionX * movementSpeed;
-            player.posZ -= directionZ * movementSpeed;
-        }
-        if (keyAPressed)
-        {
-            // Move left
-            // player.posX -= movementSpeed;
-            player.posX -= directionZ * movementSpeed;
-            player.posZ += directionX * movementSpeed;
-        }
-        if (keyDPressed)
-        {
-            // Move right
-            // player.posX += movementSpeed;
-            player.posX += directionZ * movementSpeed;
-            player.posZ -= directionX * movementSpeed;
-        }
-        if (keyQPressed)
-        {
-            // Rotate left
-            player.rotationY -= 5.0f; // Adjust rotation angle (negative direction)
-        }
-        if (keyEPressed)
-        {
-            // Rotate right
-            player.rotationY += 5.0f; // Adjust rotation angle (positive direction)
-        }
-        if (keySpacePressed && !player.onAir)
-        {
-            // jump
-            // if(player.velocityY < 20.0f){
-            player.velocityY += 18.0f;
-            // }
-            player.posY += player.velocityY * DELTATIME;
-        }
-        else
-        {
-            player.velocityY -= GRAVITY;
-            player.posY += player.velocityY * DELTATIME;
-        }
+        checkKeyStatus(player);
         updateCameraPosition(player);
         updateEnemies();
         updateProjectiles();
         std::vector<PhysObject *> physObjects;
         physObjects.push_back(reinterpret_cast<PhysObject *>(&player));
-        for (auto &enemy : enemies)
-        {
-            physObjects.push_back(reinterpret_cast<PhysObject *>(&enemy));
-        }
-        for (auto &projectile : projectiles)
-        {
-            physObjects.push_back(reinterpret_cast<PhysObject *>(&projectile));
-        }
+
         updatePhysics(physObjects, GRAVITY);
         setupProjectionMatrix();
         // Render the scene
         renderScene(window, player);
 
         // Delay to control frame rate
-        SDL_Delay(10);
+        // SDL_Delay(10);
     }
 
     // Cleanup
@@ -771,3 +984,12 @@ int main(int argc, char *argv[])
 
     return EXIT_SUCCESS;
 }
+
+// for (auto &enemy : enemies)
+// {
+//     physObjects.push_back(reinterpret_cast<PhysObject *>(&enemy));
+// }
+// for (auto &projectile : projectiles)
+// {
+//     physObjects.push_back(reinterpret_cast<PhysObject *>(&projectile));
+// }
