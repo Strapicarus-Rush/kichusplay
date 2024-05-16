@@ -6,141 +6,85 @@
 #include <string>
 #include <vector>
 #include <cmath>
-#include <SFML/Audio.hpp>
+#include <thread>
+
 #include <filesystem>
-#include <regex>
 
-namespace fs = std::filesystem;
+#include "playlist.h"
 
-sf::SoundBuffer b_music;
-sf::Sound bp_music;
+#include <chrono>
+
+bool debug = false;
+bool initializing = true;
+
+float textWidth = 1.0f;
+float textHeight = 1.0f;
 
 const int SHADOW_WIDTH = 1024;
 const int SHADOW_HEIGHT = 1024;
+
 GLuint depthMapFBO;
 GLuint shadowShaderProgram;
 GLint lightSpaceMatrixLocation;
 GLfloat lightSpaceMatrix[16];
 GLuint depthMap;
 
+SDL_GLContext context;
+SDL_Window *window;
+SDL_Renderer *renderer;
+TTF_Font *font;
+SDL_Texture *textTexture;
+SDL_Color textColor = {255, 255, 255, 255};
+
+// Load playlist asynchronously
+    Playlist playlist(debug);
+
+class Timer
+{
+private:
+    std::chrono::time_point<std::chrono::high_resolution_clock> m_LastTime;
+
+public:
+    Timer()
+    {
+        m_LastTime = std::chrono::high_resolution_clock::now();
+    }
+
+    float GetDeltaTime()
+    {
+        auto now = std::chrono::high_resolution_clock::now();
+        float deltaTime = std::chrono::duration<float, std::chrono::seconds::period>(now - m_LastTime).count();
+        m_LastTime = now;
+        return deltaTime;
+    }
+};
+
+
+
 void renderSceneFromLight();
 void renderSceneWithShadows();
 
 bool isMouseCaptured = false;
 
-class Playlist
+// position += (target-position) * (1 -exp(-speed*dt))
+// lerp: position = lerp(position, target, 1 - exp(- speed * dt))
+// position = lerp(target, position, exp(- speed * dt))
+struct Vector3
 {
-public:
-    void addSongsFromDirectory(const std::string &directoryPath)
-    {
-        if (fs::is_directory(directoryPath))
-        {
-            for (const auto &entry : fs::directory_iterator(directoryPath))
-            {
-                const auto &extension = entry.path().extension();
-                if (extension == ".flac" || extension == ".ogg" || extension == ".wav")
-                {
-                    addSong(entry.path().string());
-                    std::cerr << formatFlacMetadata(entry.path().string()) << std::endl;
-                }
-            }
-        }
-        else
-        {
-            std::cerr << "Directory is empty or does not exist: " << directoryPath << std::endl;
-        }
-    }
-    void addSong(const std::string &filename)
-    {
-        sf::SoundBuffer buffer;
-        if (buffer.loadFromFile(filename))
-        {
-            m_buffers.push_back(buffer);
-        }
-        else
-        {
-            std::cerr << "Failed to load: " << filename << std::endl;
-        }
-    }
-    std::string formatFlacMetadata(const std::string &filename)
-    {
-        // Define the regular expression pattern to find the split point
-        std::regex pattern("_-_\\d+_\\-_");
-
-        // Find the position to split the filename
-        std::smatch match;
-        std::string author, title;
-        if (std::regex_search(filename, match, pattern))
-        {
-            // Split the filename based on the regex match
-            author = filename.substr(19, match.position() - 19);
-            title = filename.substr(match.position() + match.length());
-        }
-
-        // Replace underscores with spaces
-        std::replace(author.begin(), author.end(), '_', ' ');
-        std::replace(title.begin(), title.end(), '_', ' ');
-
-        // Remove file extensions from the title
-        std::regex fileExtension("\\.(mp3|flac|wav)(\\.flac)?$");
-        title = std::regex_replace(title, fileExtension, "");
-
-        // // Remove leading and trailing whitespaces from author and title
-        author.erase(0, author.find_first_not_of(" \t\r\n"));
-        author.erase(author.find_last_not_of(" \t\r\n") + 1);
-        title.erase(0, title.find_first_not_of(" \t\r\n"));
-        title.erase(title.find_last_not_of(" \t\r\n") + 1);
-
-        return "Autor: " + author + "\nTitle: " + title;
-    }
-    void play()
-    {
-        if (m_currentIndex >= 0 && m_currentIndex < m_buffers.size())
-        {
-            m_sound.setBuffer(m_buffers[m_currentIndex]);
-            m_sound.play();
-        }
-        else
-        {
-            std::cout << "Playlist is empty or current index is out of bounds. Cannot play any song." << std::endl;
-        }
-    }
-
-    void pause()
-    {
-        m_sound.pause();
-    }
-
-    void stop()
-    {
-        m_sound.stop();
-    }
-
-    void next()
-    {
-        if (++m_currentIndex >= m_buffers.size())
-        {
-            m_currentIndex = 0;
-        }
-        stop();
-        play();
-    }
-
-    void previous()
-    {
-        if (--m_currentIndex < 0)
-        {
-            m_currentIndex = m_buffers.size() - 1;
-        }
-        stop();
-        play();
-    }
-
-private:
-    std::vector<sf::SoundBuffer> m_buffers;
-    sf::Sound m_sound;
-    int m_currentIndex = 0;
+    float x;
+    float y;
+    float z;
 };
+
+Vector3 interpolate(const Vector3 &position, const Vector3 &target, float speed, float dt)
+{
+    float factor = 1.0f - std::exp(-speed * dt);
+    Vector3 result;
+    result.x = position.x + (target.x - position.x) * factor;
+    result.y = position.y + (target.y - position.y) * factor;
+    result.z = position.z + (target.z - position.z) * factor;
+    return result;
+}
 
 class PhysObject
 {
@@ -266,7 +210,7 @@ const int WINDOW_WIDTH = 1920;
 const int WINDOW_HEIGHT = 1080;
 const char *TITLE = "KichusPlay Game GOTY Delux Edition | By Strapicarus";
 
-float DELTATIME = 0.04f; // Adjust as needed
+// float DELTATIME = 0.04f; // Adjust as needed
 
 float GROUND_Y = 0.0f;
 
@@ -291,7 +235,7 @@ float PLAYER_SIZE = 2.0f;
 float cameraPosX = 0.0f;
 float cameraPosY = 0.0f;
 float cameraPosZ = 0.0f;
-float cameraYaw = 0.0f;   // Yaw angle (horizontal)
+float cameraYaw = 0.0f;  // Yaw angle (horizontal)
 float cameraPitch = 0.0f; // Pitch angle (vertical)
 
 std::vector<Enemy> enemies;
@@ -325,7 +269,7 @@ void calculateViewMatrix()
 }
 
 // Function to handle keyboard and mouse input for camera movement and rotation
-void handleInput(SDL_Window *window, Player &player)
+void handleInput(SDL_Window *window, Player &player, float deltatime)
 {
     SDL_Event event;
     while (SDL_PollEvent(&event))
@@ -624,72 +568,8 @@ void renderAxis()
     glEnd();
 }
 
-// Function to render the scene
-void renderScene(SDL_Window *window, Player &player)
-{
-    // Clear the screen
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-
-    // Set up view matrix
-    glMatrixMode(GL_MODELVIEW);
-    glLoadIdentity();
-    calculateViewMatrix();
-
-    renderAxis();
-
-    // Render ground plane
-    glColor3f(0.5f, 0.5f, 0.5f);
-    glBegin(GL_QUADS);
-    glVertex3f(-10.0f, -GROUND_Y, -10.0f);
-    glVertex3f(-10.0f, GROUND_Y, 10.0f);
-    glVertex3f(10.0f, GROUND_Y, 10.0f);
-    glVertex3f(10.0f, -GROUND_Y, -10.0f);
-    glEnd();
-
-    // Render player
-    glPushMatrix();
-    drawStickman(player.posX, player.posY, player.posZ);
-    // glTranslatef(player.posX, player.posY, player.posZ);
-    // glRotatef(player.rotationY, 0.0f, 1.0f, 0.0f); // Rotate player around the Y-axis
-
-    glPopMatrix();
-
-    // // Render enemies
-    // for (const auto &enemy : enemies)
-    // {
-    //     glPushMatrix();
-    //     glTranslatef(enemy.posX, enemy.posY, enemy.posZ);
-    //     glColor3f(1.0f, 0.0f, 0.0f);
-    //     glBegin(GL_QUADS);
-    //     glVertex3f(-0.25f, -0.25f, -0.25f);
-    //     glVertex3f(0.25f, -0.25f, -0.25f);
-    //     glVertex3f(0.25f, 0.25f, -0.25f);
-    //     glVertex3f(-0.25f, 0.25f, -0.25f);
-    //     glEnd();
-    //     glPopMatrix();
-    // }
-
-    // // Render projectiles
-    // for (const auto &projectile : projectiles)
-    // {
-    //     glPushMatrix();
-    //     glTranslatef(projectile.posX, projectile.posY, projectile.posZ);
-    //     glColor3f(0.0f, 1.0f, 0.0f);
-    //     glBegin(GL_QUADS);
-    //     glVertex3f(-0.1f, -0.1f, -0.1f);
-    //     glVertex3f(0.1f, -0.1f, -0.1f);
-    //     glVertex3f(0.1f, 0.1f, -0.1f);
-    //     glVertex3f(-0.1f, 0.1f, -0.1f);
-    //     glEnd();
-    //     glPopMatrix();
-    // }
-
-    // Swap buffers
-    SDL_GL_SwapWindow(window);
-}
-
 // Function to update camera position following the player with acceleration and deceleration
-void updateCameraPosition(Player &player)
+void updateCameraPosition(Player &player, float deltatime)
 {
     float cameraSpeed = 0.2f;
     float distance = 1.0f;
@@ -726,13 +606,13 @@ void updateCameraPosition(Player &player)
 }
 
 // Function to update physics for enemies and projectiles
-void updatePhysics(std::vector<PhysObject *> &physObjects, float gravity)
+void updatePhysics(std::vector<PhysObject *> &physObjects, float gravity, float deltatime)
 {
 
     // Update vertical position of each object
     for (auto &obj : physObjects)
     {
-        obj->updateVerticalPosition(DELTATIME, gravity);
+        obj->updateVerticalPosition(deltatime, gravity);
     }
 }
 
@@ -836,7 +716,7 @@ GLuint createShaderProgram(const char *vertexSource, const char *fragmentSource)
     return program;
 }
 
-void checkKeyStatus(Player &player)
+void checkKeyStatus(Player &player, float deltatime)
 {
     // Calculate movement direction based on camera's yaw angle
     float directionX = cos(player.rotationY * (M_PI / 180.0f));
@@ -888,35 +768,163 @@ void checkKeyStatus(Player &player)
         // if(player.velocityY < 20.0f){
         player.velocityY += 18.0f;
         // }
-        player.posY += player.velocityY * DELTATIME;
+        player.posY += player.velocityY * deltatime;
     }
     else
     {
         player.velocityY -= GRAVITY;
-        player.posY += player.velocityY * DELTATIME;
+        player.posY += player.velocityY * deltatime;
     }
 }
 
-int main(int argc, char *argv[])
+// Define regions and their properties
+struct TerrainRegion
 {
-    // Initialize SDL
+    float minHeight;
+    float maxHeight;
+    float red, green, blue; // Color components
+};
+std::vector<TerrainRegion> regions = {
+    {0.0f, 10.0f, 0.4f, 0.2f, 0.0f},  // Brown - Dirt
+    {10.1f, 50.0f, 1.0f, 1.0f, 0.0f}, // Yellowish - Sand
+    {50.1f, 500.0f, 0.0f, 0.0f, 1.0f} // Blue - Water
+};
+// Terrain colors
+const GLfloat dirtColor[3] = {0.5f, 0.35f, 0.05f};
+const GLfloat sandColor[3] = {0.9f, 0.85f, 0.6f};
+const GLfloat waterColor[3] = {0.0f, 0.0f, 0.8f};
+// Generate height value for a given x position using sine functions
+float generateHeight(float x, float z)
+{
+    float height = std::sin(x * 0.1f) * std::cos(z * 0.1f) * 20.0f; // Sine function with smooth variation
+    return height;
+
+    // return std::sin(x * 0.1f) * 5.0f + std::sin(x * 0.05f) * 10.0f + std::sin(x * 0.01f) * 50.0f;
+}
+
+// Get the color for a given height value based on terrain regions
+void getColor(float height, float &red, float &green, float &blue)
+{
+    for (const auto &region : regions)
+    {
+        if (height >= region.minHeight && height <= region.maxHeight)
+        {
+            red = region.red;
+            green = region.green;
+            blue = region.blue;
+            return;
+        }
+    }
+}
+// Function to generate height based on player position
+GLfloat getHeight(GLfloat x, GLfloat z)
+{
+    // Define regions
+    const GLfloat region1Start = 10.0f;
+    const GLfloat region2Start = 50.0f;
+    const GLfloat region3Start = 500.0f;
+
+    // Define frequencies for sine functions
+    const GLfloat freq1 = 0.1f;
+    const GLfloat freq2 = 0.05f;
+    const GLfloat freq3 = 0.01f;
+
+    // Generate height based on regions
+    if (z <= region1Start)
+    {
+        return std::sin(freq1 * x) * std::cos(freq1 * z);
+    }
+    else if (z <= region2Start)
+    {
+        return std::sin(freq2 * x) * std::cos(freq2 * z);
+    }
+    else
+    {
+        return std::sin(freq3 * x) * std::cos(freq3 * z);
+    }
+}
+
+// Function to render the terrain
+void renderTerrain(Player &player)
+{
+    // Loop through terrain grid
+    for (GLfloat x = player.posX - WINDOW_WIDTH / 2; x < player.posX + WINDOW_WIDTH / 2; ++x)
+    {
+        for (GLfloat z = player.posZ - WINDOW_HEIGHT / 2; z < player.posZ + WINDOW_HEIGHT / 2; ++z)
+        {
+            // Get height at current position
+            GLfloat height = getHeight(x, z);
+
+            // Determine color based on height
+            const GLfloat *color;
+            if (height < 0.2f)
+            {
+                color = waterColor;
+            }
+            else if (height < 0.5f)
+            {
+                color = sandColor;
+            }
+            else
+            {
+                color = dirtColor;
+            }
+
+            // Render terrain quad
+            glBegin(GL_QUADS);
+            glColor3fv(color);
+            glVertex3f(x, height, z);
+            glVertex3f(x + 1, height, z);
+            glVertex3f(x + 1, height, z + 1);
+            glVertex3f(x, height, z + 1);
+            glEnd();
+        }
+    }
+}
+
+SDL_Texture *renderText(SDL_Renderer *renderer, TTF_Font *font, const std::string &text, SDL_Color color)
+{
+    SDL_Surface *surface = TTF_RenderText_Blended(font, text.c_str(), color);
+    if (!surface)
+    {
+        std::cerr << "Failed to render text: " << TTF_GetError() << std::endl;
+        return nullptr;
+    }
+    SDL_Texture *texture = SDL_CreateTextureFromSurface(renderer, surface);
+    SDL_FreeSurface(surface);
+    return texture;
+}
+
+TTF_Font *loadFont(const std::string &fontPath, int fontSize)
+{
+    TTF_Font *font = TTF_OpenFont(fontPath.c_str(), fontSize);
+    if (!font)
+    {
+        std::cerr << "Failed to load font: " << TTF_GetError() << std::endl;
+    }
+    return font;
+}
+
+int initializeO_S(int argc, char *argv[])
+{
+    if (argc > 1 && argv[1] == "-debug")
+    {
+        debug = true;
+        std::cout << "Debugging..." << std::endl;
+    }
     if (SDL_Init(SDL_INIT_VIDEO) < 0)
     {
         std::cerr << "SDL initialization failed: " << SDL_GetError() << std::endl;
         return EXIT_FAILURE;
     }
-
-    // Create SDL window
-    SDL_Window *window = SDL_CreateWindow(TITLE, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, WINDOW_WIDTH, WINDOW_HEIGHT, SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE);
+    window = SDL_CreateWindow(TITLE, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, WINDOW_WIDTH, WINDOW_HEIGHT, SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE);
     if (!window)
     {
         std::cerr << "Failed to create window: " << SDL_GetError() << std::endl;
         SDL_Quit();
         return EXIT_FAILURE;
     }
-
-    // Create SDL OpenGL context
-    SDL_GLContext context = SDL_GL_CreateContext(window);
+    context = SDL_GL_CreateContext(window);
     if (!context)
     {
         std::cerr << "Failed to create OpenGL context: " << SDL_GetError() << std::endl;
@@ -924,8 +932,6 @@ int main(int argc, char *argv[])
         SDL_Quit();
         return EXIT_FAILURE;
     }
-
-    // Initialize GLEW (if you're using it)
     GLenum err = glewInit();
     if (err != GLEW_OK)
     {
@@ -935,6 +941,165 @@ int main(int argc, char *argv[])
         SDL_Quit();
         return EXIT_FAILURE;
     }
+    if (TTF_Init() == -1)
+    {
+        std::cerr << "SDL_ttf initialization failed: " << TTF_GetError() << std::endl;
+        SDL_Quit();
+        return 1;
+    }
+    font = TTF_OpenFont("assets/fonts/fonts-japanese-mincho.ttf", 24);
+    if (!font)
+    {
+        std::cerr << "Failed to load font: " << TTF_GetError() << std::endl;
+        TTF_Quit();
+        SDL_Quit();
+        return 1;
+    }
+    renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
+    if (!renderer)
+    {
+        std::cerr << "Failed to create renderer: " << SDL_GetError() << std::endl;
+        TTF_CloseFont(font);
+        TTF_Quit();
+        SDL_Quit();
+        return 1;
+    }
+    std::cout << "OpenGL version: " << glGetString(GL_VERSION) << std::endl;
+    return 0;
+}
+
+// Function to render the scene
+void renderScene(SDL_Window *window, Player &player, float deltaTime)
+{
+    // Clear the screen
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+    // Set up view matrix
+    glMatrixMode(GL_MODELVIEW);
+    glLoadIdentity();
+    calculateViewMatrix();
+
+    renderAxis();
+
+    // Render ground plane
+    glColor3f(0.5f, 0.5f, 0.5f);
+    glBegin(GL_QUADS);
+    glVertex3f(-10.0f, -GROUND_Y, -10.0f);
+    glVertex3f(-10.0f, GROUND_Y, 10.0f);
+    glVertex3f(10.0f, GROUND_Y, 10.0f);
+    glVertex3f(10.0f, -GROUND_Y, -10.0f);
+    // glEnd();
+    // Render terrain
+    // Render the terrain using triangle strips
+    // glBegin(GL_TRIANGLE_STRIP);
+    // for (float x = -500.0f; x < 500.0f; x += 10.0f) {
+    //     for (float z = -500.0f; z < 500.0f; z += 10.0f) {
+    //         // Calculate height for each vertex
+    //         float height1 = generateHeight(x, z);
+    //         float height2 = generateHeight(x, z + 10.0f);
+
+    //         // Determine color based on height
+    //         float red1, green1, blue1;
+    //         float red2, green2, blue2;
+    //         getColor(height1, red1, green1, blue1);
+    //         getColor(height2, red2, green2, blue2);
+
+    //         // Set color for the current vertex
+    //         glColor3f(red1, green1, blue1);
+    //         glVertex3f(x, height1, z);
+
+    //         // Set color for the next vertex
+    //         glColor3f(red2, green2, blue2);
+    //         glVertex3f(x, height2, z + 10.0f);
+    //     }
+    // }
+
+    // Render player
+    glPushMatrix();
+    drawStickman(player.posX, player.posY, player.posZ);
+    // glTranslatef(player.posX, player.posY, player.posZ);
+    // glRotatef(player.rotationY, 0.0f, 1.0f, 0.0f); // Rotate player around the Y-axis
+
+    glPopMatrix();
+
+    // // Render enemies
+    // for (const auto &enemy : enemies)
+    // {
+    //     glPushMatrix();
+    //     glTranslatef(enemy.posX, enemy.posY, enemy.posZ);
+    //     glColor3f(1.0f, 0.0f, 0.0f);
+    //     glBegin(GL_QUADS);
+    //     glVertex3f(-0.25f, -0.25f, -0.25f);
+    //     glVertex3f(0.25f, -0.25f, -0.25f);
+    //     glVertex3f(0.25f, 0.25f, -0.25f);
+    //     glVertex3f(-0.25f, 0.25f, -0.25f);
+    //     glEnd();
+    //     glPopMatrix();
+    // }
+
+    // // Render projectiles
+    // for (const auto &projectile : projectiles)
+    // {
+    //     glPushMatrix();
+    //     glTranslatef(projectile.posX, projectile.posY, projectile.posZ);
+    //     glColor3f(0.0f, 1.0f, 0.0f);
+    //     glBegin(GL_QUADS);
+    //     glVertex3f(-0.1f, -0.1f, -0.1f);
+    //     glVertex3f(0.1f, -0.1f, -0.1f);
+    //     glVertex3f(0.1f, 0.1f, -0.1f);
+    //     glVertex3f(-0.1f, 0.1f, -0.1f);
+    //     glEnd();
+    //     glPopMatrix();
+    // }
+
+
+    
+    // Render the text to a texture if it hasn't been rendered yet
+    if (!textTexture)
+    {
+        textTexture = renderText(renderer, font, "strapicarus god", textColor);
+        if (!textTexture)
+        {
+            // Handle text rendering failure
+            // Maybe retry or fall back to a default text
+        }
+        if (textTexture)
+        {
+
+            // // Get the OpenGL texture ID from the SDL_Texture
+            // GLuint glTextureID;
+            SDL_GL_BindTexture(textTexture, NULL, NULL); //, &glTextureID);
+
+            // Set up orthogonal projection for 2D rendering
+            glMatrixMode(GL_PROJECTION);
+            glLoadIdentity();
+            glOrtho(0, WINDOW_WIDTH, WINDOW_HEIGHT, 0, -1, 1);
+            glMatrixMode(GL_MODELVIEW);
+            glLoadIdentity();
+            // Draw the textured quad
+            glBegin(GL_QUADS);
+            glTexCoord2f(0, 0);
+            glVertex2f(1.0f, 1.0f);
+            glTexCoord2f(1, 0);
+            glVertex2f(1.0f + textWidth, 1.0f);
+            glTexCoord2f(1, 1);
+            glVertex2f(1.0f + textWidth, 1.0f + textHeight);
+            glTexCoord2f(0, 1);
+            glVertex2f(1.0f, 1.0f + textHeight);
+            // glEnd();
+
+            // Unbind the texture from the current OpenGL context
+            SDL_GL_UnbindTexture(textTexture);
+        }
+    }
+    glEnd();
+    // Swap buffers
+    SDL_GL_SwapWindow(window);
+}
+
+int main(int argc, char *argv[])
+{
+    initializeO_S(argc, argv);
 
     // Set up OpenGL
     glClearColor(0.2f, 0.3f, 0.3f, 1.0f);
@@ -948,48 +1113,62 @@ int main(int argc, char *argv[])
     // Create a player instance
     Player player(0.0f, 0.0f, 0.0f);
 
-    // Load Background Music
-    Playlist playlist;
-    playlist.addSongsFromDirectory("assets/media/music");
-    playlist.play();
+    
+    std::thread playlistThread([&]()
+                               { playlist.addSongsFromDirectory("assets/media/music"); });
 
-    // Check OpenGL version
-    std::cout << "OpenGL version: " << glGetString(GL_VERSION) << std::endl;
-    // Main loop
+    
+
+   
+    Timer timer;
     bool quit = false;
+
     while (!quit)
     {
+        float deltaTime = timer.GetDeltaTime();
+
+        // Clear the screen
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         // Handle input
-        handleInput(window, player);
-        checkKeyStatus(player);
-        updateCameraPosition(player);
+        handleInput(window, player, deltaTime);
+        checkKeyStatus(player, deltaTime);
+        updateCameraPosition(player, deltaTime);
         updateEnemies();
         updateProjectiles();
         std::vector<PhysObject *> physObjects;
         physObjects.push_back(reinterpret_cast<PhysObject *>(&player));
 
-        updatePhysics(physObjects, GRAVITY);
+        updatePhysics(physObjects, GRAVITY, deltaTime);
         setupProjectionMatrix();
         // Render the scene
-        renderScene(window, player);
+        renderScene(window, player, deltaTime);
 
-        // Delay to control frame rate
-        // SDL_Delay(10);
+        if (playlist.loading == 0 && initializing == 1)
+        {
+            std::cout << "Playlist Loading: " << playlist.loading << std::endl;
+            playlistThread.join();
+            playlist.play();
+            initializing = false;
+            // std::thread terrainThread([&]() // leads to segmentation fault, all render should be on render scene on maion thread
+            //                           { renderTerrain(player); });
+        }
+        else if (playlist.loading == 0 && initializing == 0)
+        {
+            playlist.playNextIfFinished();
+            // std::cout << "Loading: " << playlist.loading << std::endl;
+        }
+        // if(SDL_GetError()>0){
+        //     std::cout << "SDL:GetError: " << SDL_GetError() << std::endl;
+        // }
+        
+        
     }
 
     // Cleanup
+    TTF_Quit();
     SDL_GL_DeleteContext(context);
     SDL_DestroyWindow(window);
     SDL_Quit();
 
     return EXIT_SUCCESS;
 }
-
-// for (auto &enemy : enemies)
-// {
-//     physObjects.push_back(reinterpret_cast<PhysObject *>(&enemy));
-// }
-// for (auto &projectile : projectiles)
-// {
-//     physObjects.push_back(reinterpret_cast<PhysObject *>(&projectile));
-// }
