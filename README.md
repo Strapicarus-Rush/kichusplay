@@ -1,8 +1,9 @@
-Requeriments, tested on Linux Debian 6.7.12-1 trixie/sid
+tested on Linux Debian 6.7.12-1 trixie/sid
 
 g++
-libglfw3-dev
-libsfml-dev
+SDL2
+libsdl2-dev
+libsdl2-ttf-dev
 cmake 
 make 
 libglm-dev
@@ -14,19 +15,9 @@ libxrandr-dev
 libxext-dev 
 libxcursor-dev 
 libxinerama-dev 
-libxi-dev
-libfreetype6
-libfreetype6-dev
-libfreetype-dev
 
 
-compile:Example (linux) 
 
-g++ -o gamestart.out gamestart.cpp -I/usr/include/SDL2 -lSDL2 -lGL -lGLEW -lsfml-audio && ./gamestart.out
+compile:
 
-Run:
-./gamestart.out
-
-
-Run:
-./gamestart.out
+g++ -o gamestart.out gamestart.cpp playlist.cpp -I/usr/include/SDL2 -lSDL2 -lSDL2_ttf -lGL -lGLEW -lsfml-audio && ./gamestart.out

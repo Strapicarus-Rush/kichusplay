@@ -1,3 +1,4 @@
+
 #include <GL/glew.h>
 #include <iostream>
 #include <SDL.h>
@@ -7,18 +8,40 @@
 #include <vector>
 #include <cmath>
 #include <thread>
-
 #include <filesystem>
-
 #include "playlist.h"
-
 #include <chrono>
+#include <algorithm> // For std::shuffle
+#include <random>    // For std::default_random_engine
+#include <numeric>    // For std::iota
 
-bool debug = false;
+
+const char *TITLE = "KichusPlay Game GOTY Delux Edition | By Strapicarus";
+float GROUND_Y = 0.0f;
+const float GRAVITY = 9.8f; // Acceleration due to gravity (m/s^2)
+// Define variables to track the state of each relevant key
+bool keyWPressed = false;
+bool keySPressed = false;
+bool keyAPressed = false;
+bool keyDPressed = false;
+bool keyQPressed = false;
+bool keyEPressed = false;
+bool keySpacePressed = false;
+
+// Camera parameters
+float cameraPosX = 0.0f;
+float cameraPosY = 0.0f;
+float cameraPosZ = 0.0f;
+float cameraYaw = 0.0f;   // Yaw angle (horizontal)
+float cameraPitch = 0.0f; // Pitch angle (vertical)
+
+bool debug = true;
 bool initializing = true;
 
 float textWidth = 1.0f;
 float textHeight = 1.0f;
+int WINDOW_WIDTH = 1920;
+int WINDOW_HEIGHT = 1080;
 
 const int SHADOW_WIDTH = 1024;
 const int SHADOW_HEIGHT = 1024;
@@ -35,9 +58,14 @@ SDL_Renderer *renderer;
 TTF_Font *font;
 SDL_Texture *textTexture;
 SDL_Color textColor = {255, 255, 255, 255};
+SDL_Event event;
 
-// Load playlist asynchronously
-    Playlist playlist(debug);
+const int TERRAIN_WIDTH = 500;
+const int TERRAIN_HEIGHT = 500;
+
+float terrainData[TERRAIN_WIDTH][TERRAIN_HEIGHT];
+
+Playlist playlist(debug);
 
 class Timer
 {
@@ -59,32 +87,10 @@ public:
     }
 };
 
-
-
 void renderSceneFromLight();
 void renderSceneWithShadows();
 
 bool isMouseCaptured = false;
-
-// position += (target-position) * (1 -exp(-speed*dt))
-// lerp: position = lerp(position, target, 1 - exp(- speed * dt))
-// position = lerp(target, position, exp(- speed * dt))
-struct Vector3
-{
-    float x;
-    float y;
-    float z;
-};
-
-Vector3 interpolate(const Vector3 &position, const Vector3 &target, float speed, float dt)
-{
-    float factor = 1.0f - std::exp(-speed * dt);
-    Vector3 result;
-    result.x = position.x + (target.x - position.x) * factor;
-    result.y = position.y + (target.y - position.y) * factor;
-    result.z = position.z + (target.z - position.z) * factor;
-    return result;
-}
 
 class PhysObject
 {
@@ -97,13 +103,14 @@ class Player : public PhysObject
 public:
     float posX;
     float posY;
+    float lastPosY = 0.0f;
     float posZ;
     float velocityX;
     float velocityY;
     float velocityZ;
     float rotationY;
-    float mass;         // Optional: mass of the object
-    bool onAir = false; // Flag to track if the player is jumping
+    float mass;        // Optional: mass of the object
+    bool onAir = true; // Flag to track if the player is jumping
 
     // Constructor
     Player(float x, float y, float z) : posX(x), posY(y), posZ(z), velocityY(0.0f), rotationY(0.0f), velocityZ(0.0f), mass(1.0f) {}
@@ -111,24 +118,32 @@ public:
     // Function to update the vertical position of the playe
     void updateVerticalPosition(float deltaTime, float gravity) override
     {
-        // Apply acceleration due to gravity
-        velocityY -= gravity * deltaTime;
 
         // Perform ray casting to find the distance to the ground
         float distanceToGround = rayCastGround(posX, posY, posZ);
 
         // Update vertical position
+        if (distanceToGround > 0.1)
+        {
+            onAir = true;
+        }
         if (onAir)
         {
+            // Apply acceleration due to gravity
+            velocityY -= gravity * deltaTime;
             posY += velocityY * deltaTime;
+            if (distanceToGround <= 0.1f)
+            {
+                onAir = false;
+                velocityY = 0.0f;
+            }
+            std::cout << "onAir: " << onAir << std::endl;
+            if (debug > 0)
+            {
+                std::cout << "Distance to ground: " << distanceToGround << std::endl;
+            }
         }
 
-        if (posY <= distanceToGround) // If player's Y position is less than or equal to 0
-        {
-            posY = 0.0f;      // Ensure the player is at ground level
-            onAir = false;    // Reset jumping flag
-            velocityY = 0.0f; // Reset vertical velocity
-        }
     }
 
     // Function to perform ray casting to find the distance to the ground
@@ -136,8 +151,8 @@ public:
     {
         // Define the direction of the ray (pointing downwards)
         float rayDirectionX = 0.0f;
-        float rayDirectionY = 0.0f;
-        float rayDirectionZ = -1.0f; // Points downwards along the negative z-axis
+        float rayDirectionY = -1.0f;
+        float rayDirectionZ = 0.0f; // Points downwards along the negative z-axis
 
         // Define the starting position of the ray
         float rayOriginX = x;
@@ -159,7 +174,7 @@ public:
             float currentZ = rayOriginZ + rayDirectionZ * distance;
 
             // Perform collision detection with the ground (e.g., a flat plane at z = 0)
-            if (currentZ <= 0.0f)
+            if (currentY <= 120.0f)
             {
                 // Return the distance to the ground
                 return distance;
@@ -205,42 +220,8 @@ public:
         // Implement vertical position update for projectile
     }
 };
-
-const int WINDOW_WIDTH = 1920;
-const int WINDOW_HEIGHT = 1080;
-const char *TITLE = "KichusPlay Game GOTY Delux Edition | By Strapicarus";
-
-// float DELTATIME = 0.04f; // Adjust as needed
-
-float GROUND_Y = 0.0f;
-
-const float GRAVITY = 9.8f; // Acceleration due to gravity (m/s^2)
-
-// Define variables to track the state of each relevant key
-bool keyWPressed = false;
-bool keySPressed = false;
-bool keyAPressed = false;
-bool keyDPressed = false;
-bool keyQPressed = false;
-bool keyEPressed = false;
-bool keySpacePressed = false;
-
-// Player parameters
-// float playerPosX = 0.0f;
-// float playerPosY = 0.0f;
-// float playerPosZ = 2.0f;
-float PLAYER_SIZE = 2.0f;
-
-// Camera parameters
-float cameraPosX = 0.0f;
-float cameraPosY = 0.0f;
-float cameraPosZ = 0.0f;
-float cameraYaw = 0.0f;  // Yaw angle (horizontal)
-float cameraPitch = 0.0f; // Pitch angle (vertical)
-
 std::vector<Enemy> enemies;
 std::vector<Projectile> projectiles;
-
 void setupProjectionMatrix()
 {
     // Set up projection matrix
@@ -271,7 +252,6 @@ void calculateViewMatrix()
 // Function to handle keyboard and mouse input for camera movement and rotation
 void handleInput(SDL_Window *window, Player &player, float deltatime)
 {
-    SDL_Event event;
     while (SDL_PollEvent(&event))
     {
         if (event.type == SDL_QUIT)
@@ -360,7 +340,7 @@ void handleInput(SDL_Window *window, Player &player, float deltatime)
             {
                 // if (event.motion.state)
                 // {
-                cameraYaw += event.motion.xrel * 0.1f;
+                cameraYaw -= event.motion.xrel * 0.1f;
                 cameraPitch += event.motion.yrel * 0.1f;
                 if (cameraPitch > 89.0f)
                     cameraPitch = 89.0f;
@@ -486,47 +466,88 @@ void drawSolidCube(float size)
     glEnd();
 }
 
-void drawStickman(float posX, float posY, float posZ)
+void drawStickman(Player &player)
 {
-    // Set drawing color
-    glColor3f(1.0f, 0.0f, 0.0f); // Red color
-
-    // Draw head
+    // Apply player's rotation
     glPushMatrix();
-    glTranslatef(posX, posY + 1.8f, posZ);
+    glTranslatef(player.posX, player.posY, player.posZ);
+    glRotatef(player.rotationY, 0.0f, 1.0f, 0.0f);
+
+    // Draw head (hair)
+    glPushMatrix();
+    glTranslatef(0.0f, 2.7f, 0.0f); // Adjust position to separate hair from skin
+    glColor3f(0.1f, 0.1f, 0.1f);    // Almost black color for hair
+    drawSolidSphere(0.2f, 20, 20);  // Adjust sphere radius as needed
+    glPopMatrix();
+
+    // Draw head (skin)
+    glPushMatrix();
+    glTranslatef(0.0f, 2.5f, 0.0f);
+    glColor3f(1.0f, 0.8f, 0.6f);   // Skin color
     drawSolidSphere(0.2f, 20, 20); // Adjust sphere radius as needed
     glPopMatrix();
 
     // Draw body
     glPushMatrix();
-    glTranslatef(posX, posY + 0.5f, posZ);
-    drawSolidCube(0.4f); // Adjust cube dimensions as needed
+    glTranslatef(0.0f, 2.0f, 0.0f);
+    glColor3f(0.6f, 0.8f, 0.6f); // Light green color for body
+    drawSolidCube(0.4f);         // Adjust cube dimensions as needed
     glPopMatrix();
 
     // Draw arms
     glPushMatrix();
-    glTranslatef(posX - 0.3f, posY + 1.0f, posZ);
-    glScalef(0.8f, 0.2f, 0.2f); // Scale to adjust arm size
-    drawSolidCube(1.0f);        // Adjust cube dimensions as needed
+    glTranslatef(-0.3f, 2.3f, 0.0f);
+    glColor3f(1.0f, 0.8f, 0.6f); // Skin color for arms
+    glScalef(0.8f, 0.2f, 0.2f);  // Scale to adjust arm size
+    drawSolidCube(1.0f);         // Adjust cube dimensions as needed
     glPopMatrix();
 
     glPushMatrix();
-    glTranslatef(posX + 0.3f, posY + 1.0f, posZ);
-    glScalef(0.8f, 0.2f, 0.2f); // Scale to adjust arm size
-    drawSolidCube(1.0f);        // Adjust cube dimensions as needed
+    glTranslatef(0.3f, 2.3f, 0.0f);
+    glColor3f(1.0f, 0.8f, 0.6f); // Skin color for arms
+    glScalef(0.8f, 0.2f, 0.2f);  // Scale to adjust arm size
+    drawSolidCube(1.0f);         // Adjust cube dimensions as needed
+    glPopMatrix();
+
+    // Draw hips
+    glPushMatrix();
+    glTranslatef(0.0f, 1.6f, 0.0f);
+    glColor3f(0.0f, 0.5f, 0.75f); // Dark cyan color for hips
+    glScalef(0.5f, 0.4f, 0.2f);   // Scale to adjust hip size
+    drawSolidCube(1.0f);          // Adjust cube dimensions as needed
     glPopMatrix();
 
     // Draw legs
     glPushMatrix();
-    glTranslatef(posX - 0.1f, posY - 0.5f, posZ);
-    glScalef(0.4f, 0.8f, 0.2f); // Scale to adjust leg size
-    drawSolidCube(1.0f);        // Adjust cube dimensions as needed
+    glTranslatef(-0.1f, 1.0f, 0.0f);
+    glColor3f(0.0f, 0.5f, 0.75f); // Dark cyan color for legs
+    glScalef(0.4f, 0.8f, 0.2f);   // Scale to adjust leg size
+    drawSolidCube(1.0f);          // Adjust cube dimensions as needed
     glPopMatrix();
 
     glPushMatrix();
-    glTranslatef(posX + 0.1f, posY - 0.5f, posZ);
-    glScalef(0.4f, 0.8f, 0.2f); // Scale to adjust leg size
-    drawSolidCube(1.0f);        // Adjust cube dimensions as needed
+    glTranslatef(0.1f, 1.0f, 0.0f);
+    glColor3f(0.0f, 0.5f, 0.75f); // Dark cyan color for legs
+    glScalef(0.4f, 0.8f, 0.2f);   // Scale to adjust leg size
+    drawSolidCube(1.0f);          // Adjust cube dimensions as needed
+    glPopMatrix();
+
+    // Draw shoes
+    glPushMatrix();
+    glTranslatef(-0.1f, 0.5f, 0.0f);
+    glColor3f(1.0f, 1.0f, 1.0f); // White color for shoes
+    glScalef(0.4f, 0.2f, 0.2f);  // Scale to adjust shoe size
+    drawSolidCube(1.0f);         // Adjust cube dimensions as needed
+    glPopMatrix();
+
+    glPushMatrix();
+    glTranslatef(0.1f, 0.5f, 0.0f);
+    glColor3f(1.0f, 1.0f, 1.0f); // White color for shoes
+    glScalef(0.4f, 0.2f, 0.2f);  // Scale to adjust shoe size
+    drawSolidCube(1.0f);         // Adjust cube dimensions as needed
+    glPopMatrix();
+
+    // Restore the previous transformation state
     glPopMatrix();
 }
 
@@ -536,24 +557,24 @@ void renderAxis()
     glBegin(GL_LINES);
 
     // X-axis (red)
-    glColor3f(1.0f, 0.0f, 0.0f);
-    glVertex3f(-10.0f, 0.0f, 0.0f);
-    glVertex3f(10.0f, 0.0f, 0.0f);
+    glColor3f(1.0f, 0.0f, 1.0f);
+    glVertex3f(-10.0f, 0.0f, 1.0f);
+    glVertex3f(10.0f, 0.0f, 1.0f);
     // Arrowhead for X-axis
-    glVertex3f(10.0f, 0.0f, 0.0f);
-    glVertex3f(9.0f, 1.0f, 0.0f);
-    glVertex3f(10.0f, 0.0f, 0.0f);
-    glVertex3f(9.0f, -1.0f, 0.0f);
+    glVertex3f(10.0f, 0.0f, 1.0f);
+    glVertex3f(9.0f, 1.0f, 1.0f);
+    glVertex3f(10.0f, 0.0f, 1.0f);
+    glVertex3f(9.0f, -1.0f, 1.0f);
 
     // Y-axis (green)
-    glColor3f(0.0f, 1.0f, 0.0f);
-    glVertex3f(0.0f, -10.0f, 0.0f);
-    glVertex3f(0.0f, 10.0f, 0.0f);
+    glColor3f(0.0f, 1.0f, 1.0f);
+    glVertex3f(0.0f, -10.0f, 1.0f);
+    glVertex3f(0.0f, 10.0f, 1.0f);
     // Arrowhead for Y-axis
-    glVertex3f(0.0f, 10.0f, 0.0f);
-    glVertex3f(1.0f, 9.0f, 0.0f);
-    glVertex3f(0.0f, 10.0f, 0.0f);
-    glVertex3f(-1.0f, 9.0f, 0.0f);
+    glVertex3f(0.0f, 10.0f, 1.0f);
+    glVertex3f(1.0f, 9.0f, 1.0f);
+    glVertex3f(0.0f, 10.0f, 1.0f);
+    glVertex3f(-1.0f, 9.0f, 1.0f);
 
     // Z-axis (blue)
     glColor3f(0.0f, 0.0f, 1.0f);
@@ -571,9 +592,12 @@ void renderAxis()
 // Function to update camera position following the player with acceleration and deceleration
 void updateCameraPosition(Player &player, float deltatime)
 {
-    float cameraSpeed = 0.2f;
-    float distance = 1.0f;
-    float height = 1.0f;
+    float cameraSpeed = 14.0f;
+    float distance = 1.2f;
+    float height = 2.0f;
+
+    // Convert cameraYaw from degrees to radians
+    float yawRad = cameraYaw * (M_PI / 180.0f);
 
     // Calculate the direction from the camera to the player
     float directionX = player.posX - cameraPosX;
@@ -587,14 +611,15 @@ void updateCameraPosition(Player &player, float deltatime)
     directionZ /= length;
 
     // Calculate the desired position of the camera behind the player
-    float targetX = player.posX;
+    float targetX = player.posX - directionX + distance * std::sin(yawRad);
     float targetY = player.posY - directionY + height;
-    float targetZ = player.posZ - directionZ * distance;
+    float targetZ = player.posZ - directionZ + distance * std::cos(yawRad);
 
     // Calculate the velocity of the camera towards the desired position
-    float velocityX = (targetX - cameraPosX) * cameraSpeed;
-    float velocityY = (targetY - cameraPosY) * cameraSpeed;
-    float velocityZ = (targetZ - cameraPosZ) * cameraSpeed;
+    float factor = 1.0f - std::exp(-cameraSpeed * deltatime);
+    float velocityX = (targetX - cameraPosX) * factor;
+    float velocityY = (targetY - cameraPosY) * factor;
+    float velocityZ = (targetZ - cameraPosZ) * factor;
 
     // Update the camera position with the calculated velocity
     cameraPosX += velocityX;
@@ -605,65 +630,14 @@ void updateCameraPosition(Player &player, float deltatime)
     player.rotationY = -atan2f(directionX, -directionZ) * (180.0f / M_PI);
 }
 
-// Function to update physics for enemies and projectiles
 void updatePhysics(std::vector<PhysObject *> &physObjects, float gravity, float deltatime)
 {
-
-    // Update vertical position of each object
     for (auto &obj : physObjects)
     {
         obj->updateVerticalPosition(deltatime, gravity);
     }
 }
 
-// Shader sources
-const char *depthVertexShaderSource =
-    "#version 440 core\n"
-    "layout (location = 0) in vec3 aPos;\n"
-    "uniform mat4 lightSpaceMatrix;\n"
-    "uniform mat4 model;\n"
-    "void main()\n"
-    "{\n"
-    "   gl_Position = lightSpaceMatrix * model * vec4(aPos, 1.0);\n"
-    "}\n";
-
-const char *depthFragmentShaderSource =
-    "#version 440 core\n"
-    "void main()\n"
-    "{\n"
-    "}\n";
-
-const char *shadowVertexShaderSource =
-    "#version 440 core\n"
-    "layout (location = 0) in vec3 aPos;\n"
-    "layout (location = 1) in vec3 aNormal;\n"
-    "out vec4 FragPosLightSpace;\n"
-    "uniform mat4 model;\n"
-    "uniform mat4 view;\n"
-    "uniform mat4 projection;\n"
-    "uniform mat4 lightSpaceMatrix;\n"
-    "void main()\n"
-    "{\n"
-    "   gl_Position = projection * view * model * vec4(aPos, 1.0);\n"
-    "   FragPosLightSpace = lightSpaceMatrix * model * vec4(aPos, 1.0);\n"
-    "}\n";
-
-const char *shadowFragmentShaderSource =
-    "#version 440 core\n"
-    "in vec4 FragPosLightSpace;\n"
-    "out vec4 FragColor;\n"
-    "uniform sampler2D shadowMap;\n"
-    "void main()\n"
-    "{\n"
-    "   vec3 projCoords = FragPosLightSpace.xyz / FragPosLightSpace.w;\n"
-    "   projCoords = projCoords * 0.5 + 0.5;\n"
-    "   float closestDepth = texture(shadowMap, projCoords.xy).r;\n"
-    "   float currentDepth = projCoords.z;\n"
-    "   float shadow = currentDepth > closestDepth ? 1.0 : 0.0;\n"
-    "   FragColor = vec4(0.5, 0.5, 0.5, 1.0) * (1.0 - shadow);\n"
-    "}\n";
-
-// Function to check for OpenGL errors
 void checkGLError()
 {
     GLenum error = glGetError();
@@ -673,142 +647,411 @@ void checkGLError()
     }
 }
 
-// Function to compile a shader
-GLuint compileShader(GLenum type, const char *source)
-{
-    GLuint shader = glCreateShader(type);
-    glShaderSource(shader, 1, &source, NULL);
-    glCompileShader(shader);
-    // Check compilation status
-    GLint success;
-    glGetShaderiv(shader, GL_COMPILE_STATUS, &success);
-    if (!success)
-    {
-        GLchar infoLog[512];
-        glGetShaderInfoLog(shader, 512, NULL, infoLog);
-        std::cerr << "Shader Compilation Error: " << infoLog << std::endl;
-    }
-    return shader;
-}
-
-// Function to create a shader program
-GLuint createShaderProgram(const char *vertexSource, const char *fragmentSource)
-{
-    GLuint vertexShader = compileShader(GL_VERTEX_SHADER, vertexSource);
-    GLuint fragmentShader = compileShader(GL_FRAGMENT_SHADER, fragmentSource);
-    // Create program
-    GLuint program = glCreateProgram();
-    glAttachShader(program, vertexShader);
-    glAttachShader(program, fragmentShader);
-    glLinkProgram(program);
-    // Check linking status
-    GLint success;
-    glGetProgramiv(program, GL_LINK_STATUS, &success);
-    if (!success)
-    {
-        GLchar infoLog[512];
-        glGetProgramInfoLog(program, 512, NULL, infoLog);
-        std::cerr << "Shader Program Linking Error: " << infoLog << std::endl;
-    }
-    // Clean up
-    glDeleteShader(vertexShader);
-    glDeleteShader(fragmentShader);
-    return program;
-}
-
 void checkKeyStatus(Player &player, float deltatime)
 {
     // Calculate movement direction based on camera's yaw angle
-    float directionX = cos(player.rotationY * (M_PI / 180.0f));
-    float directionZ = -sin(player.rotationY * (M_PI / 180.0f));
+    float directionX = cos(cameraYaw * (M_PI / 180.0f));
+    float directionZ = -sin(cameraYaw * (M_PI / 180.0f));
+    float velocity = 5.0f;
+    float jump = velocity * 2.0f;
+    float movementSpeed = velocity * deltatime; // Adjust movement speed as needed
 
-    // Update game state
-    float movementSpeed = 0.1f; // Adjust movement speed as needed
     if (keyWPressed)
     {
-        // Move forward
-        // player.posZ -= movementSpeed;
-        player.posX += directionX * movementSpeed;
-        player.posZ += directionZ * movementSpeed;
-    }
-    if (keySPressed)
-    {
-        // Move backward
-        // player.posZ += movementSpeed;
-        player.posX -= directionX * movementSpeed;
-        player.posZ -= directionZ * movementSpeed;
-    }
-    if (keyAPressed)
-    {
-        // Move left
-        // player.posX -= movementSpeed;
-        player.posX -= directionZ * movementSpeed;
-        player.posZ += directionX * movementSpeed;
-    }
-    if (keyDPressed)
-    {
-        // Move right
-        // player.posX += movementSpeed;
         player.posX += directionZ * movementSpeed;
         player.posZ -= directionX * movementSpeed;
     }
+    if (keySPressed)
+    {
+        player.posX -= directionZ * movementSpeed;
+        player.posZ += directionX * movementSpeed;
+    }
+    if (keyAPressed)
+    {
+        player.posX -= directionX * movementSpeed;
+        player.posZ -= directionZ * movementSpeed;
+    }
+    if (keyDPressed)
+    {
+        player.posX += directionX * movementSpeed;
+        player.posZ += directionZ * movementSpeed;
+    }
     if (keyQPressed)
     {
-        // Rotate left
-        player.rotationY -= 5.0f; // Adjust rotation angle (negative direction)
+        player.rotationY -= 5.0f;
     }
     if (keyEPressed)
     {
-        // Rotate right
-        player.rotationY += 5.0f; // Adjust rotation angle (positive direction)
+        player.rotationY += 5.0f;
     }
     if (keySpacePressed && !player.onAir)
     {
-        // jump
-        // if(player.velocityY < 20.0f){
-        player.velocityY += 18.0f;
-        // }
-        player.posY += player.velocityY * deltatime;
-    }
-    else
-    {
-        player.velocityY -= GRAVITY;
-        player.posY += player.velocityY * deltatime;
+        player.onAir = true;
+        player.velocityY += jump;
     }
 }
 
+// void precalculateTerrain(Player &player) {
+//     for (int x = 0; x < TERRAIN_WIDTH; ++x) {
+//         for (int z = 0; z < TERRAIN_HEIGHT; ++z) {
+//             // Calcular la altura en la posición actual
+//             float height = getHeight(player.posX - WINDOW_WIDTH / 2 + x, player.posZ - WINDOW_HEIGHT / 2 + z);
+//             terrainData[x][z] = height;
+//         }
+//     }
+// }
+
+// // Define regions and their properties
+// struct TerrainRegion
+// {
+//     float minHeight;
+//     float maxHeight;
+//     float red, green, blue; // Color components
+// };
+// std::vector<TerrainRegion> regions = {
+//     {0.1f, 0.8f, 0.0f, 0.0f, 1.0f},   // Blue - Water
+//     {0.9f, 1.2f, 0.4f, 0.2f, 0.0f},  // Brown - Dirt
+//     {1.3f, 15.0f, 1.0f, 1.0f, 0.0f}, // Yellowish - Sand
+//     {15.1f, 30.0f, 0.0f, 1.0f, 0.0f},  // Green - Grassland
+//     {30.1f, 50.0f, 0.0f, 0.5f, 0.0f},  // Dark Green - Valley
+//     {50.1f, 75.0f, 1.0f, 1.0f, 0.0f},  // Yellowish - Sand (Coline)
+//     {96.1f, 120.0f, 0.6f, 0.6f, 0.6f}, // Gray - Mountain
+//     {120.1f, 150.0f, 1.0f, 1.0f, 1.0f} // White - Peak Snow
+// };
+// // Terrain colors
+// const GLfloat dirtColor[3] = {0.5f, 0.35f, 0.05f};
+// const GLfloat grasslandColor[3] = {0.0f, 1.0f, 0.0f};
+// const GLfloat valleyColor[3] = {0.0f, 0.5f, 0.0f};
+// const GLfloat colineColor[3] = {0.9f, 0.85f, 0.6f};
+// const GLfloat highlandsColor[3] = {0.5f, 0.35f, 0.1f};
+// const GLfloat mountainColor[3] = {0.6f, 0.6f, 0.6f};
+// const GLfloat peakSnowColor[3] = {1.0f, 1.0f, 1.0f};
+// const GLfloat sandColor[3] = {0.9f, 0.85f, 0.6f};
+// const GLfloat waterColor[3] = {0.0f, 0.0f, 0.8f};
+
+// // Get the color for a given height value based on terrain regions
+// void getColor(float height, float &red, float &green, float &blue)
+// {
+//     for (const auto &region : regions)
+//     {
+//         if (height >= region.minHeight && height <= region.maxHeight)
+//         {
+//             red = region.red;
+//             green = region.green;
+//             blue = region.blue;
+//             return;
+//         }
+//     }
+// }
+// // Function to generate height based on player position
+// GLfloat getHeight(GLfloat x, GLfloat z)
+// {
+//     // Define regions
+//     const GLfloat region1Start = 0.0f;
+//     const GLfloat region2Start = 500.0f;
+//     const GLfloat region3Start = 1000.0f;
+
+//     // Define frequencies for sine functions
+//     const GLfloat freq1 = 1.0f;
+//     const GLfloat freq2 = 0.5f;
+//     const GLfloat freq3 = 0.2f;
+
+//     // Generate height based on regions
+//     if (z <= region1Start)
+//     {
+//         return std::sin(freq1 * x) * std::cos(freq1 * z);
+//     }
+//     else if (z <= region2Start)
+//     {
+//         return std::sin(freq2 * x) * std::cos(freq2 * z);
+//     }
+//     else
+//     {
+//         return std::sin(freq3 * x) * std::cos(freq3 * z);
+//     }
+// }
+
+
+
+// void renderTerrain(Player &player)
+// {
+//     // Rango ajustado para evitar problemas de rendimiento
+//     float startX = player.posX - 120;
+//     float endX = player.posX + 120;
+//     float startZ = player.posZ - 120;
+//     float endZ = player.posZ + 120;
+
+//     for (GLfloat x = startX; x < endX; x += 0.4f)
+//     {
+//         for (GLfloat z = startZ; z < endZ; z += 0.4f)
+//         {
+//             // Get height at current position
+//             GLfloat height = getHeight(x, z);
+
+//             // Determine color based on height
+//             const GLfloat *color;
+//             if (height < 0.01f)
+//             {
+//                 color = waterColor;
+//             }
+//             else if (height < 0.1f)
+//             {
+//                 color = sandColor;
+//             }
+//             else if (height < 1.0f)
+//             {
+//                 color = dirtColor;
+//             }
+//             else if (height < 1.3f)
+//             {
+//                 color = dirtColor;
+//             }
+
+//             // Render terrain quad
+//             glBegin(GL_QUADS);
+//             glColor3fv(color);
+//             glVertex3f(x, height, z);
+//             glVertex3f(x + 0.4f, height, z);
+//             glVertex3f(x + 0.4f, height, z + 0.4f);
+//             glVertex3f(x, height, z + 0.4f);
+//             glEnd();
+//         }
+//     }
+// }
+// class PerlinNoise {
+// public:
+//     PerlinNoise() {
+//         std::iota(p, p + 256, 0); // Fill p with values from 0 to 255
+//         std::default_random_engine engine(std::random_device{}());
+//         std::shuffle(p, p + 256, engine); // Shuffle using std::shuffle
+//         for (int i = 0; i < 256; ++i) {
+//             p[256 + i] = p[i];
+//         }
+//     }
+
+//     float noise(float x, float y, float z) const {
+//         int X = static_cast<int>(floor(x)) & 255;
+//         int Y = static_cast<int>(floor(y)) & 255;
+//         int Z = static_cast<int>(floor(z)) & 255;
+
+//         x -= floor(x);
+//         y -= floor(y);
+//         z -= floor(z);
+
+//         float u = fade(x);
+//         float v = fade(y);
+//         float w = fade(z);
+
+//         int A = p[X] + Y;
+//         int AA = p[A] + Z;
+//         int AB = p[A + 1] + Z;
+//         int B = p[X + 1] + Y;
+//         int BA = p[B] + Z;
+//         int BB = p[B + 1] + Z;
+
+//         return lerp(w, lerp(v, lerp(u, grad(p[AA], x, y, z),
+//                                       grad(p[BA], x - 1, y, z)),
+//                               lerp(u, grad(p[AB], x, y - 1, z),
+//                                       grad(p[BB], x - 1, y - 1, z))),
+//                        lerp(v, lerp(u, grad(p[AA + 1], x, y, z - 1),
+//                                       grad(p[BA + 1], x - 1, y, z - 1)),
+//                               lerp(u, grad(p[AB + 1], x, y - 1, z - 1),
+//                                       grad(p[BB + 1], x - 1, y - 1, z - 1))));
+//     }
+
+// private:
+//     int p[512];
+
+//     float fade(float t) const {
+//         return t * t * t * (t * (t * 6 - 15) + 10);
+//     }
+
+//     float lerp(float t, float a, float b) const {
+//         return a + t * (b - a);
+//     }
+
+//     float grad(int hash, float x, float y, float z) const {
+//         int h = hash & 15;
+//         float u = h < 8 ? x : y;
+//         float v = h < 4 ? y : (h == 12 || h == 14 ? x : z);
+//         return ((h & 1) == 0 ? u : -u) + ((h & 2) == 0 ? v : -v);
+//     }
+// };
+
+// // Define regions and their properties
+// struct TerrainRegion {
+//     float minHeight;
+//     float maxHeight;
+//     float red, green, blue; // Color components
+// };
+
+// std::vector<TerrainRegion> regions = {
+//     {0.0f, 0.8f, 0.0f, 0.0f, 1.0f},    // Blue - Water
+//     {0.9f, 1.2f, 0.4f, 0.2f, 0.0f},    // Brown - Dirt
+//     {1.3f, 15.0f, 1.0f, 1.0f, 0.0f},   // Yellowish - Sand
+//     {15.1f, 30.0f, 0.0f, 1.0f, 0.0f},  // Green - Grassland
+//     {30.1f, 50.0f, 0.0f, 0.5f, 0.0f},  // Dark Green - Valley
+//     {50.1f, 75.0f, 1.0f, 1.0f, 0.0f},  // Yellowish - Sand (Coline)
+//     {75.1f, 96.0f, 0.5f, 0.35f, 0.1f}, // Light Brown - Highlands
+//     {96.1f, 120.0f, 0.6f, 0.6f, 0.6f}, // Gray - Mountain
+//     {120.1f, 150.0f, 1.0f, 1.0f, 1.0f} // White - Peak Snow
+// };
+
+// // Get the color for a given height value based on terrain regions
+// void getColor(float height, float &red, float &green, float &blue) {
+//     for (const auto &region : regions) {
+//         if (height >= region.minHeight && height <= region.maxHeight) {
+//             red = region.red;
+//             green = region.green;
+//             blue = region.blue;
+//             return;
+//         }
+//     }
+// }
+
+// // Generate height using Perlin noise
+// GLfloat getHeight(GLfloat x, GLfloat z, const PerlinNoise &noise) {
+//     float scale = 0.1f;
+//     float height = noise.noise(x * scale, z * scale, 0.0f) * 100.0f;
+//     return height;
+// }
+
+// // Calculate normal for a terrain point
+// void calculateNormal(GLfloat x, GLfloat z, GLfloat &nx, GLfloat &ny, GLfloat &nz, const PerlinNoise &noise) {
+//     GLfloat hL = getHeight(x - 1.0f, z, noise);
+//     GLfloat hR = getHeight(x + 1.0f, z, noise);
+//     GLfloat hD = getHeight(x, z - 1.0f, noise);
+//     GLfloat hU = getHeight(x, z + 1.0f, noise);
+//     nx = hL - hR;
+//     ny = 2.0f;
+//     nz = hD - hU;
+//     GLfloat length = sqrt(nx * nx + ny * ny + nz * nz);
+//     nx /= length;
+//     ny /= length;
+//     nz /= length;
+// }
+
+// // Render the terrain
+// void renderTerrain(Player &player) {
+//     PerlinNoise noise;
+
+//     float startX = player.posX - 120;
+//     float endX = player.posX + 120;
+//     float startZ = player.posZ - 120;
+//     float endZ = player.posZ + 120;
+
+//     for (GLfloat x = startX; x < endX; x += 0.4f) {
+//         for (GLfloat z = startZ; z < endZ; z += 0.4f) {
+//             // Get height at current position
+//             GLfloat height = getHeight(x, z, noise);
+
+//             // Determine color based on height
+//             float red, green, blue;
+//             getColor(height, red, green, blue);
+
+//             // Calculate normals for lighting
+//             GLfloat nx, ny, nz;
+//             calculateNormal(x, z, nx, ny, nz, noise);
+
+//             // Render terrain quad
+//             glBegin(GL_QUADS);
+//             glColor3f(red, green, blue);
+//             glNormal3f(nx, ny, nz);
+//             glVertex3f(x, height, z);
+//             GLfloat h1 = getHeight(x + 0.4f, z, noise);
+//             GLfloat h2 = getHeight(x + 0.4f, z + 0.4f, noise);
+//             GLfloat h3 = getHeight(x, z + 0.4f, noise);
+//             glVertex3f(x + 0.4f, h1, z);
+//             glVertex3f(x + 0.4f, h2, z + 0.4f);
+//             glVertex3f(x, h3, z + 0.4f);
+//             glEnd();
+//         }
+//     }
+// }
+
+class PerlinNoise {
+public:
+    PerlinNoise() {
+        std::iota(p, p + 256, 0); // Fill p with values from 0 to 255
+        std::default_random_engine engine(std::random_device{}());
+        std::shuffle(p, p + 256, engine); // Shuffle using std::shuffle
+        for (int i = 0; i < 256; ++i) {
+            p[256 + i] = p[i];
+        }
+    }
+
+    float noise(float x, float y, float z) const {
+        int X = static_cast<int>(floor(x)) & 255;
+        int Y = static_cast<int>(floor(y)) & 255;
+        int Z = static_cast<int>(floor(z)) & 255;
+
+        x -= floor(x);
+        y -= floor(y);
+        z -= floor(z);
+
+        float u = fade(x);
+        float v = fade(y);
+        float w = fade(z);
+
+        int A = p[X] + Y;
+        int AA = p[A] + Z;
+        int AB = p[A + 1] + Z;
+        int B = p[X + 1] + Y;
+        int BA = p[B] + Z;
+        int BB = p[B + 1] + Z;
+
+        return lerp(w, lerp(v, lerp(u, grad(p[AA], x, y, z),
+                                      grad(p[BA], x - 1, y, z)),
+                              lerp(u, grad(p[AB], x, y - 1, z),
+                                      grad(p[BB], x - 1, y - 1, z))),
+                       lerp(v, lerp(u, grad(p[AA + 1], x, y, z - 1),
+                                      grad(p[BA + 1], x - 1, y, z - 1)),
+                              lerp(u, grad(p[AB + 1], x, y - 1, z - 1),
+                                      grad(p[BB + 1], x - 1, y - 1, z - 1))));
+    }
+
+private:
+    int p[512];
+
+    float fade(float t) const {
+        return t * t * t * (t * (t * 6 - 15) + 10);
+    }
+
+    float lerp(float t, float a, float b) const {
+        return a + t * (b - a);
+    }
+
+    float grad(int hash, float x, float y, float z) const {
+        int h = hash & 15;
+        float u = h < 8 ? x : y;
+        float v = h < 4 ? y : (h == 12 || h == 14 ? x : z);
+        return ((h & 1) == 0 ? u : -u) + ((h & 2) == 0 ? v : -v);
+    }
+};
+
 // Define regions and their properties
-struct TerrainRegion
-{
+struct TerrainRegion {
     float minHeight;
     float maxHeight;
     float red, green, blue; // Color components
 };
-std::vector<TerrainRegion> regions = {
-    {0.0f, 10.0f, 0.4f, 0.2f, 0.0f},  // Brown - Dirt
-    {10.1f, 50.0f, 1.0f, 1.0f, 0.0f}, // Yellowish - Sand
-    {50.1f, 500.0f, 0.0f, 0.0f, 1.0f} // Blue - Water
-};
-// Terrain colors
-const GLfloat dirtColor[3] = {0.5f, 0.35f, 0.05f};
-const GLfloat sandColor[3] = {0.9f, 0.85f, 0.6f};
-const GLfloat waterColor[3] = {0.0f, 0.0f, 0.8f};
-// Generate height value for a given x position using sine functions
-float generateHeight(float x, float z)
-{
-    float height = std::sin(x * 0.1f) * std::cos(z * 0.1f) * 20.0f; // Sine function with smooth variation
-    return height;
 
-    // return std::sin(x * 0.1f) * 5.0f + std::sin(x * 0.05f) * 10.0f + std::sin(x * 0.01f) * 50.0f;
-}
+std::vector<TerrainRegion> regions = {
+    {0.0f, 0.8f, 0.0f, 0.0f, 1.0f},    // Blue - Water
+    {0.9f, 1.2f, 0.4f, 0.2f, 0.0f},    // Brown - Dirt
+    {1.3f, 5.0f, 1.0f, 1.0f, 0.0f},   // Yellowish - Sand
+    {5.1f, 10.0f, 0.0f, 1.0f, 0.0f},  // Green - Grassland
+    {10.1f, 20.0f, 0.0f, 0.5f, 0.0f},  // Dark Green - Valley
+    {20.1f, 25.0f, 1.0f, 1.0f, 0.0f},  // Yellowish - Sand (Coline)
+    {25.1f, 46.0f, 0.5f, 0.35f, 0.1f}, // Light Brown - Highlands
+    {46.1f, 70.0f, 0.6f, 0.6f, 0.6f}, // Gray - Mountain
+    {70.1f, 120.0f, 1.0f, 1.0f, 1.0f} // White - Peak Snow
+};
 
 // Get the color for a given height value based on terrain regions
-void getColor(float height, float &red, float &green, float &blue)
-{
-    for (const auto &region : regions)
-    {
-        if (height >= region.minHeight && height <= region.maxHeight)
-        {
+void getColor(float height, float &red, float &green, float &blue) {
+    for (const auto &region : regions) {
+        if (height >= region.minHeight && height <= region.maxHeight) {
             red = region.red;
             green = region.green;
             blue = region.blue;
@@ -816,71 +1059,148 @@ void getColor(float height, float &red, float &green, float &blue)
         }
     }
 }
-// Function to generate height based on player position
-GLfloat getHeight(GLfloat x, GLfloat z)
-{
-    // Define regions
-    const GLfloat region1Start = 10.0f;
-    const GLfloat region2Start = 50.0f;
-    const GLfloat region3Start = 500.0f;
 
-    // Define frequencies for sine functions
-    const GLfloat freq1 = 0.1f;
-    const GLfloat freq2 = 0.05f;
-    const GLfloat freq3 = 0.01f;
-
-    // Generate height based on regions
-    if (z <= region1Start)
-    {
-        return std::sin(freq1 * x) * std::cos(freq1 * z);
+// Create a heightmap using Perlin noise
+std::vector<std::vector<GLfloat>> createHeightmap(int width, int height, const PerlinNoise &noise) {
+    std::vector<std::vector<GLfloat>> heightmap(width, std::vector<GLfloat>(height));
+    for (int x = 0; x < width; ++x) {
+        for (int z = 0; z < height; ++z) {
+            float scale = 0.009f;
+            heightmap[x][z] = noise.noise(x * scale, z * scale, 0.0f) * 100.0f;
+        }
     }
-    else if (z <= region2Start)
-    {
-        return std::sin(freq2 * x) * std::cos(freq2 * z);
-    }
-    else
-    {
-        return std::sin(freq3 * x) * std::cos(freq3 * z);
-    }
+    return heightmap;
 }
 
-// Function to render the terrain
-void renderTerrain(Player &player)
-{
-    // Loop through terrain grid
-    for (GLfloat x = player.posX - WINDOW_WIDTH / 2; x < player.posX + WINDOW_WIDTH / 2; ++x)
-    {
-        for (GLfloat z = player.posZ - WINDOW_HEIGHT / 2; z < player.posZ + WINDOW_HEIGHT / 2; ++z)
-        {
-            // Get height at current position
-            GLfloat height = getHeight(x, z);
+// Calculate normal for a terrain point using the heightmap
+void calculateNormal(int x, int z, GLfloat &nx, GLfloat &ny, GLfloat &nz, const std::vector<std::vector<GLfloat>> &heightmap) {
+    int width = heightmap.size();
+    int height = heightmap[0].size();
+
+    GLfloat hL = (x > 0) ? heightmap[x - 1][z] : heightmap[x][z];
+    GLfloat hR = (x < width - 1) ? heightmap[x + 1][z] : heightmap[x][z];
+    GLfloat hD = (z > 0) ? heightmap[x][z - 1] : heightmap[x][z];
+    GLfloat hU = (z < height - 1) ? heightmap[x][z + 1] : heightmap[x][z];
+
+    nx = hL - hR;
+    ny = 2.0f;
+    nz = hD - hU;
+
+    GLfloat length = sqrt(nx * nx + ny * ny + nz * nz);
+    nx /= length;
+    ny /= length;
+    nz /= length;
+}
+
+void renderTerrain(Player &player, const std::vector<std::vector<GLfloat>> &heightmap) {
+    int width = heightmap.size();
+    int height = heightmap[0].size();
+
+    // Adjust render range based on player position
+    float startX = std::max(player.posX - 140, 0.0f);
+    float endX = std::min(player.posX + 140, static_cast<float>(width));
+    float startZ = std::max(player.posZ - 140, 0.0f);
+    float endZ = std::min(player.posZ + 140, static_cast<float>(height));
+
+    for (float x = startX; x < endX; x += 1.0f) {
+        for (float z = startZ; z < endZ; z += 1.0f) {
+            // Get height at current position from the heightmap
+            int xIndex = static_cast<int>(x);
+            int zIndex = static_cast<int>(z);
+            GLfloat height = heightmap[xIndex][zIndex];
 
             // Determine color based on height
-            const GLfloat *color;
-            if (height < 0.2f)
-            {
-                color = waterColor;
-            }
-            else if (height < 0.5f)
-            {
-                color = sandColor;
-            }
-            else
-            {
-                color = dirtColor;
-            }
+            float red, green, blue;
+            getColor(height, red, green, blue);
+
+            // Calculate normals for lighting
+            GLfloat nx, ny, nz;
+            calculateNormal(xIndex, zIndex, nx, ny, nz, heightmap);
 
             // Render terrain quad
             glBegin(GL_QUADS);
-            glColor3fv(color);
+            glColor3f(red, green, blue);
+            glNormal3f(nx, ny, nz);
             glVertex3f(x, height, z);
-            glVertex3f(x + 1, height, z);
-            glVertex3f(x + 1, height, z + 1);
-            glVertex3f(x, height, z + 1);
+            glVertex3f(x + 1.0f, heightmap[xIndex + 1][zIndex], z);
+            glVertex3f(x + 1.0f, heightmap[xIndex + 1][zIndex + 1], z + 1.0f);
+            glVertex3f(x, heightmap[xIndex][zIndex + 1], z + 1.0f);
             glEnd();
         }
     }
 }
+
+// void renderTerrain(Player &player, const PerlinNoise &noise) {
+//     // Define terrain parameters
+//     float terrainSize = 300.0f; // Size of the terrain
+//     float step = 1.0f; // Step size between vertices
+//     int detailLevel = 2; // Level of detail for terrain
+
+//     // Determine the range of terrain to render around the player
+//     float startX = player.posX - terrainSize / 2.0f;
+//     float endX = player.posX + terrainSize / 2.0f;
+//     float startZ = player.posZ - terrainSize / 2.0f;
+//     float endZ = player.posZ + terrainSize / 2.0f;
+
+//     // Render terrain in the specified range
+//     for (float x = startX; x < endX; x += step * detailLevel) {
+//         for (float z = startZ; z < endZ; z += step * detailLevel) {
+//             // Calculate height using Perlin noise
+//             float height = noise.noise(x, 0, z) * 100.0f;
+
+//             // Determine color based on height
+//             float red, green, blue;
+//             getColor(height, red, green, blue);
+
+//             // Render terrain quad
+//             glBegin(GL_QUADS);
+//             glColor3f(red, green, blue);
+//             glVertex3f(x, height, z);
+//             glVertex3f(x + step * detailLevel, noise.noise(x + step *detailLevel, 0, z),
+//                        z);
+//             glVertex3f(x + step * detailLevel, noise.noise(x + step * detailLevel, 0, z + step * detailLevel),
+//                        z + step * detailLevel);
+//             glVertex3f(x, noise.noise(x, 0, z + step * detailLevel), z + step * detailLevel);
+//             glEnd();
+//         }
+//     }
+// }
+// Render the terrain using the precomputed heightmap
+// void renderTerrain(Player &player, const std::vector<std::vector<GLfloat>> &heightmap) {
+//     int width = heightmap.size();
+//     int height = heightmap[0].size();
+
+//     float startX = player.posX - 120;
+//     float endX = player.posX + 120;
+//     float startZ = player.posZ - 120;
+//     float endZ = player.posZ + 120;
+
+//     for (int x = startX; x < endX; x += 1) {
+//         for (int z = startZ; z < endZ; z += 1) {
+//             if (x >= 0 && x < width - 1 && z >= 0 && z < height - 1) {
+//                 GLfloat height = heightmap[x][z];
+
+//                 // Determine color based on height
+//                 float red, green, blue;
+//                 getColor(height, red, green, blue);
+
+//                 // Calculate normals for lighting
+//                 GLfloat nx, ny, nz;
+//                 calculateNormal(x, z, nx, ny, nz, heightmap);
+
+//                 // Render terrain quad
+//                 glBegin(GL_QUADS);
+//                 glColor3f(red, green, blue);
+//                 glNormal3f(nx, ny, nz);
+//                 glVertex3f(x, height, z);
+//                 glVertex3f(x + 1, heightmap[x + 1][z], z);
+//                 glVertex3f(x + 1, heightmap[x + 1][z + 1], z + 1);
+//                 glVertex3f(x, heightmap[x][z + 1], z + 1);
+//                 glEnd();
+//             }
+//         }
+//     }
+// }
 
 SDL_Texture *renderText(SDL_Renderer *renderer, TTF_Font *font, const std::string &text, SDL_Color color)
 {
@@ -903,6 +1223,62 @@ TTF_Font *loadFont(const std::string &fontPath, int fontSize)
         std::cerr << "Failed to load font: " << TTF_GetError() << std::endl;
     }
     return font;
+}
+
+void renderScene(SDL_Window *window, Player &player, float deltaTime, const std::vector<std::vector<GLfloat>> &heightmap)
+{
+    // Clear the screen
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+    // Set up view matrix
+    glMatrixMode(GL_MODELVIEW);
+    glLoadIdentity();
+    calculateViewMatrix();
+
+    // Render the axis
+    renderAxis();
+
+    // Render terrain
+    renderTerrain(player, heightmap);
+
+    // Render player
+    glPushMatrix();
+    drawStickman(player);
+    glPopMatrix();
+
+    // Render the text to a texture if it hasn't been rendered yet
+    // if (!textTexture)
+    // {
+    //     textTexture = renderText(renderer, font, "strapicarus god", textColor);
+    //     if (textTexture)
+    //     {
+    //         SDL_GL_BindTexture(textTexture, NULL, NULL);
+
+    //         // Set up orthogonal projection for 2D rendering
+    //         glMatrixMode(GL_PROJECTION);
+    //         glLoadIdentity();
+    //         glOrtho(0, WINDOW_WIDTH, WINDOW_HEIGHT, 0, -1, 1);
+    //         glMatrixMode(GL_MODELVIEW);
+    //         glLoadIdentity();
+
+    //         // Draw the textured quad
+    //         glBegin(GL_QUADS);
+    //         glTexCoord2f(0, 0);
+    //         glVertex2f(1.0f, 1.0f);
+    //         glTexCoord2f(1, 0);
+    //         glVertex2f(1.0f + textWidth, 1.0f);
+    //         glTexCoord2f(1, 1);
+    //         glVertex2f(1.0f + textWidth, 1.0f + textHeight);
+    //         glTexCoord2f(0, 1);
+    //         glVertex2f(1.0f, 1.0f + textHeight);
+    //         glEnd();
+
+    //         SDL_GL_UnbindTexture(textTexture);
+    //     }
+    // }
+
+    // Swap buffers
+    SDL_GL_SwapWindow(window);
 }
 
 int initializeO_S(int argc, char *argv[])
@@ -965,136 +1341,8 @@ int initializeO_S(int argc, char *argv[])
         return 1;
     }
     std::cout << "OpenGL version: " << glGetString(GL_VERSION) << std::endl;
+    // createHouse(houseVAO, houseVBO, houseEBO);
     return 0;
-}
-
-// Function to render the scene
-void renderScene(SDL_Window *window, Player &player, float deltaTime)
-{
-    // Clear the screen
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-
-    // Set up view matrix
-    glMatrixMode(GL_MODELVIEW);
-    glLoadIdentity();
-    calculateViewMatrix();
-
-    renderAxis();
-
-    // Render ground plane
-    glColor3f(0.5f, 0.5f, 0.5f);
-    glBegin(GL_QUADS);
-    glVertex3f(-10.0f, -GROUND_Y, -10.0f);
-    glVertex3f(-10.0f, GROUND_Y, 10.0f);
-    glVertex3f(10.0f, GROUND_Y, 10.0f);
-    glVertex3f(10.0f, -GROUND_Y, -10.0f);
-    // glEnd();
-    // Render terrain
-    // Render the terrain using triangle strips
-    // glBegin(GL_TRIANGLE_STRIP);
-    // for (float x = -500.0f; x < 500.0f; x += 10.0f) {
-    //     for (float z = -500.0f; z < 500.0f; z += 10.0f) {
-    //         // Calculate height for each vertex
-    //         float height1 = generateHeight(x, z);
-    //         float height2 = generateHeight(x, z + 10.0f);
-
-    //         // Determine color based on height
-    //         float red1, green1, blue1;
-    //         float red2, green2, blue2;
-    //         getColor(height1, red1, green1, blue1);
-    //         getColor(height2, red2, green2, blue2);
-
-    //         // Set color for the current vertex
-    //         glColor3f(red1, green1, blue1);
-    //         glVertex3f(x, height1, z);
-
-    //         // Set color for the next vertex
-    //         glColor3f(red2, green2, blue2);
-    //         glVertex3f(x, height2, z + 10.0f);
-    //     }
-    // }
-
-    // Render player
-    glPushMatrix();
-    drawStickman(player.posX, player.posY, player.posZ);
-    // glTranslatef(player.posX, player.posY, player.posZ);
-    // glRotatef(player.rotationY, 0.0f, 1.0f, 0.0f); // Rotate player around the Y-axis
-
-    glPopMatrix();
-
-    // // Render enemies
-    // for (const auto &enemy : enemies)
-    // {
-    //     glPushMatrix();
-    //     glTranslatef(enemy.posX, enemy.posY, enemy.posZ);
-    //     glColor3f(1.0f, 0.0f, 0.0f);
-    //     glBegin(GL_QUADS);
-    //     glVertex3f(-0.25f, -0.25f, -0.25f);
-    //     glVertex3f(0.25f, -0.25f, -0.25f);
-    //     glVertex3f(0.25f, 0.25f, -0.25f);
-    //     glVertex3f(-0.25f, 0.25f, -0.25f);
-    //     glEnd();
-    //     glPopMatrix();
-    // }
-
-    // // Render projectiles
-    // for (const auto &projectile : projectiles)
-    // {
-    //     glPushMatrix();
-    //     glTranslatef(projectile.posX, projectile.posY, projectile.posZ);
-    //     glColor3f(0.0f, 1.0f, 0.0f);
-    //     glBegin(GL_QUADS);
-    //     glVertex3f(-0.1f, -0.1f, -0.1f);
-    //     glVertex3f(0.1f, -0.1f, -0.1f);
-    //     glVertex3f(0.1f, 0.1f, -0.1f);
-    //     glVertex3f(-0.1f, 0.1f, -0.1f);
-    //     glEnd();
-    //     glPopMatrix();
-    // }
-
-
-    
-    // Render the text to a texture if it hasn't been rendered yet
-    if (!textTexture)
-    {
-        textTexture = renderText(renderer, font, "strapicarus god", textColor);
-        if (!textTexture)
-        {
-            // Handle text rendering failure
-            // Maybe retry or fall back to a default text
-        }
-        if (textTexture)
-        {
-
-            // // Get the OpenGL texture ID from the SDL_Texture
-            // GLuint glTextureID;
-            SDL_GL_BindTexture(textTexture, NULL, NULL); //, &glTextureID);
-
-            // Set up orthogonal projection for 2D rendering
-            glMatrixMode(GL_PROJECTION);
-            glLoadIdentity();
-            glOrtho(0, WINDOW_WIDTH, WINDOW_HEIGHT, 0, -1, 1);
-            glMatrixMode(GL_MODELVIEW);
-            glLoadIdentity();
-            // Draw the textured quad
-            glBegin(GL_QUADS);
-            glTexCoord2f(0, 0);
-            glVertex2f(1.0f, 1.0f);
-            glTexCoord2f(1, 0);
-            glVertex2f(1.0f + textWidth, 1.0f);
-            glTexCoord2f(1, 1);
-            glVertex2f(1.0f + textWidth, 1.0f + textHeight);
-            glTexCoord2f(0, 1);
-            glVertex2f(1.0f, 1.0f + textHeight);
-            // glEnd();
-
-            // Unbind the texture from the current OpenGL context
-            SDL_GL_UnbindTexture(textTexture);
-        }
-    }
-    glEnd();
-    // Swap buffers
-    SDL_GL_SwapWindow(window);
 }
 
 int main(int argc, char *argv[])
@@ -1111,20 +1359,35 @@ int main(int argc, char *argv[])
     std::vector<Projectile> projectiles;
 
     // Create a player instance
-    Player player(0.0f, 0.0f, 0.0f);
+    Player player(100.0f, 20.0f, 100.0f);
 
-    
+    // precalculateTerrain(player);
+    PerlinNoise noise;
+    int terrainWidth = 1000;
+    int terrainHeight = 1000;
+    auto heightmap = createHeightmap(terrainWidth, terrainHeight, noise);
+
+
     std::thread playlistThread([&]()
                                { playlist.addSongsFromDirectory("assets/media/music"); });
 
-    
-
-   
     Timer timer;
     bool quit = false;
 
     while (!quit)
     {
+
+        if (event.type == SDL_WINDOWEVENT)
+        {
+            if (event.window.event == SDL_WINDOWEVENT_SIZE_CHANGED)
+            {
+                WINDOW_WIDTH = event.window.data1;
+                WINDOW_HEIGHT = event.window.data2;
+                // int newWidth = event.window.data1;
+                // int newHeight = event.window.data2;
+                // printf("Window resized to: %d x %d\n", newWidth, newHeight);
+            }
+        }
         float deltaTime = timer.GetDeltaTime();
 
         // Clear the screen
@@ -1133,15 +1396,15 @@ int main(int argc, char *argv[])
         handleInput(window, player, deltaTime);
         checkKeyStatus(player, deltaTime);
         updateCameraPosition(player, deltaTime);
-        updateEnemies();
-        updateProjectiles();
+        // updateEnemies();
+        // updateProjectiles();
         std::vector<PhysObject *> physObjects;
         physObjects.push_back(reinterpret_cast<PhysObject *>(&player));
 
         updatePhysics(physObjects, GRAVITY, deltaTime);
         setupProjectionMatrix();
         // Render the scene
-        renderScene(window, player, deltaTime);
+        renderScene(window, player, deltaTime, heightmap);
 
         if (playlist.loading == 0 && initializing == 1)
         {
@@ -1160,11 +1423,12 @@ int main(int argc, char *argv[])
         // if(SDL_GetError()>0){
         //     std::cout << "SDL:GetError: " << SDL_GetError() << std::endl;
         // }
-        
-        
     }
 
     // Cleanup
+    // glDeleteVertexArrays(1, &houseVAO);
+    // glDeleteBuffers(1, &houseVBO);
+    // glDeleteBuffers(1, &houseEBO);
     TTF_Quit();
     SDL_GL_DeleteContext(context);
     SDL_DestroyWindow(window);
