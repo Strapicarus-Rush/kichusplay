@@ -5,8 +5,6 @@
 #include <regex>
 
 sf::SoundBuffer buffer;
-
-namespace fs = std::filesystem;
 bool debugging = false;
 
 Playlist::Playlist(bool &debug)
@@ -25,9 +23,9 @@ void Playlist::playNextIfFinished()
 
 void Playlist::addSongsFromDirectory(const std::string &directoryPath)
 {
-    if (fs::is_directory(directoryPath))
+    if (std::filesystem::is_directory(directoryPath))
     {
-        for (const auto &entry : fs::directory_iterator(directoryPath))
+        for (const auto &entry : std::filesystem::directory_iterator(directoryPath))
         {
             const auto &extension = entry.path().extension();
             if (extension == ".flac" || extension == ".ogg" || extension == ".wav")
